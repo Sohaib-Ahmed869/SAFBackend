@@ -64,7 +64,6 @@ app.post("/api/newsletter", async (req, res) => {
 app.get("/api/newsletters", async (req, res) => {
   const subscribers = await newsLetter.find();
   res.json(subscribers);
-
 });
 
 // Error handling
