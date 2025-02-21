@@ -17,7 +17,8 @@ const adminOrderRoutes = require("./routes/admin/order.routes");
 const donorController = require("./controllers/admin/donorController");
 const subscriptionRoutesAdmin = require("./routes/admin/subscription.routes");
 const eventRoutesAdmin = require("./routes/admin/event.routes");
-
+const joinRoutes = require("./routes/joinRoutes");
+const newsLetter = require("./models/newsletter");
 const app = express();
 
 // Connect to database
@@ -26,7 +27,7 @@ connectDB();
 // Middleware
 app.use(
   cors({
-    origin: "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com",
+    origin: "*",
   })
 );
 app.use(express.json());
@@ -47,6 +48,24 @@ app.use("/api/admin/orders", adminOrderRoutes);
 app.use("/api/admin/donors", donorController);
 app.use("/api/admin/subscriptions", subscriptionRoutesAdmin);
 app.use("/api/admin/events", eventRoutesAdmin);
+app.use("/api/join", joinRoutes);
+app.post("/api/newsletter", async (req, res) => {
+  const { email } = req.body;
+  const existingSubscriber = await newsLetter.findOne({ email });
+  if (existingSubscriber) {
+    return res.status(400).json({ message: "You are already subscribed" });
+  }
+  const subscriber = await newsLetter.create({ email });
+  subscriber.save();
+  return res
+    .status(201)
+    .json({ message: "You have been subscribed successfully" });
+});
+app.get("/api/newsletters", async (req, res) => {
+  const subscribers = await newsLetter.find();
+  res.json(subscribers);
+
+});
 
 // Error handling
 app.use(errorHandler);

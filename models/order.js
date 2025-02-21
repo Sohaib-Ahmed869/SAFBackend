@@ -1,25 +1,25 @@
-// models/Order.js
+// Update your Order model with subscription-related fields
 const mongoose = require("mongoose");
+const Schema = mongoose.Schema;
 
-const orderSchema = new mongoose.Schema(
+const OrderSchema = new Schema(
   {
     user: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
+      required: false, // Allow anonymous donations
+    },
+    donationId: {
+      type: String,
+      required: true,
+      unique: true,
     },
     items: [
       {
-        title: {
-          type: String,
-          required: true,
-        },
-        price: {
-          type: Number,
-          required: true,
-        },
+        title: String,
+        price: Number,
         quantity: {
           type: Number,
-          required: true,
           default: 1,
         },
         onBehalfOf: String,
@@ -41,32 +41,20 @@ const orderSchema = new mongoose.Schema(
       },
     },
     donorDetails: {
-      name: {
-        type: String,
-        required: true,
-      },
-      phone: {
-        type: String,
-        required: true,
-      },
-      email: {
-        type: String,
-        required: true,
-      },
+      name: String,
+      phone: String,
+      email: String,
       address: {
         street: String,
         city: String,
         state: String,
         postcode: String,
       },
-      agreeToMessages: {
-        type: Boolean,
-        default: false,
-      },
+      agreeToMessages: Boolean,
     },
     paymentMethod: {
       type: String,
-      enum: ["card", "apple-google", "paypal", "bank"],
+      enum: ["card", "bank", "paypal"],
       required: true,
     },
     paymentStatus: {
@@ -75,10 +63,12 @@ const orderSchema = new mongoose.Schema(
         "pending",
         "processing",
         "completed",
+        "failed",
+        "requires_action",
         "active",
         "paused",
-        "failed",
         "cancelled",
+        "past_due",
       ],
       default: "pending",
     },
@@ -86,47 +76,167 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
-    donationId: {
-      type: String,
-      required: true,
-      unique: true,
+    // Recurring payment details
+    recurringDetails: {
+      frequency: {
+        type: String,
+        enum: ["daily", "weekly", "monthly", "yearly"],
+      },
+      amount: Number,
+      startDate: Date,
+      endDate: Date, // Optional end date
+      status: {
+        type: String,
+        enum: ["active", "paused", "cancelled"],
+        default: "active",
+      },
+      nextPaymentDate: Date,
+      totalPayments: {
+        type: Number,
+        default: 0,
+      },
+      paymentHistory: [
+        {
+          date: Date,
+          amount: Number,
+          invoiceId: String,
+          status: {
+            type: String,
+            enum: ["succeeded", "failed", "pending"],
+          },
+          failureReason: String,
+        },
+      ],
     },
+    // Installment payment details
     installmentDetails: {
       numberOfInstallments: Number,
-      frequency: String,
-      amount: Number,
+      installmentAmount: Number,
       startDate: Date,
+      status: {
+        type: String,
+        enum: ["active", "paused", "cancelled", "completed"],
+        default: "active",
+      },
+      installmentsPaid: {
+        type: Number,
+        default: 0,
+      },
+      nextInstallmentDate: Date,
+      installmentHistory: [
+        {
+          installmentNumber: Number,
+          date: Date,
+          amount: Number,
+          status: String,
+          transactionId: String,
+          failureReason: String,
+        },
+      ],
     },
-    recurringDetails: {
-      frequency: String,
-      amount: Number,
-      startDate: Date,
-      endDate: Date,
-    },
+    // Transaction details
     transactionDetails: {
-      transactionId: String,
-      provider: String,
-      status: String,
-      timestamp: Date,
+      type: Schema.Types.Mixed, // Flexible schema for different payment methods
+      default: {},
     },
+    // Pause history
+    pauseHistory: [
+      {
+        startDate: Date,
+        endDate: Date,
+        actualEndDate: Date, // When the pause was actually ended
+        reason: String,
+      },
+    ],
+    // Amount update history
+    amountHistory: [
+      {
+        oldAmount: Number,
+        newAmount: Number,
+        date: Date,
+      },
+    ],
+    // Cancellation details
+    cancellationDetails: {
+      date: Date,
+      reason: String,
+      cancelledBy: Schema.Types.ObjectId, // User or admin ID
+    },
+    lastPaymentDate: Date,
   },
   {
     timestamps: true,
   }
 );
 
-// Generate unique donation ID before saving
-orderSchema.pre("save", async function (next) {
-  if (this.isNew) {
-    const date = new Date();
-    const year = date.getFullYear().toString().substr(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, "0");
-    const randomNum = Math.floor(Math.random() * 10000)
-      .toString()
-      .padStart(4, "0");
-    this.donationId = `D${year}${month}${randomNum}`;
+// Pre-save hook to update lastPaymentDate when payment history is updated
+OrderSchema.pre("save", function (next) {
+  const order = this;
+
+  // Update lastPaymentDate for recurring payments
+  if (
+    order.recurringDetails &&
+    order.recurringDetails.paymentHistory &&
+    order.recurringDetails.paymentHistory.length > 0
+  ) {
+    const lastPayment =
+      order.recurringDetails.paymentHistory[
+        order.recurringDetails.paymentHistory.length - 1
+      ];
+    if (lastPayment.status === "succeeded") {
+      order.lastPaymentDate = lastPayment.date;
+    }
   }
+
+  // Update lastPaymentDate for installment payments
+  if (
+    order.installmentDetails &&
+    order.installmentDetails.installmentHistory &&
+    order.installmentDetails.installmentHistory.length > 0
+  ) {
+    const lastInstallment =
+      order.installmentDetails.installmentHistory[
+        order.installmentDetails.installmentHistory.length - 1
+      ];
+    if (lastInstallment.status === "completed") {
+      order.lastPaymentDate = lastInstallment.date;
+    }
+  }
+
   next();
 });
 
-module.exports = mongoose.model("Order", orderSchema);
+// Create virtual property for remaining installments
+OrderSchema.virtual("remainingInstallments").get(function () {
+  if (!this.installmentDetails) return 0;
+  return Math.max(
+    0,
+    this.installmentDetails.numberOfInstallments -
+      this.installmentDetails.installmentsPaid
+  );
+});
+
+// Create virtual property for subscription status
+OrderSchema.virtual("subscriptionStatus").get(function () {
+  if (this.paymentType === "single") return null;
+
+  if (this.paymentStatus === "cancelled") return "Cancelled";
+  if (this.paymentStatus === "paused") return "Paused";
+  if (this.paymentStatus === "failed") return "Failed";
+  if (this.paymentStatus === "past_due") return "Past Due";
+
+  if (
+    this.paymentType === "installments" &&
+    this.installmentDetails &&
+    this.installmentDetails.installmentsPaid >=
+      this.installmentDetails.numberOfInstallments
+  ) {
+    return "Completed";
+  }
+
+  return "Active";
+});
+
+const Order = mongoose.model("Order", OrderSchema);
+
+module.exports = Order;

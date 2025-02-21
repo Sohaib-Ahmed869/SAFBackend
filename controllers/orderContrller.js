@@ -1,7 +1,7 @@
 // controllers/orderController.js
 const Order = require("../models/order");
 const User = require("../models/user");
-
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 exports.createOrder = async (req, res) => {
   try {
     const {
@@ -12,6 +12,8 @@ exports.createOrder = async (req, res) => {
       paymentMethod,
       totalAmount,
       recurringDetails,
+      installmentDetails,
+      stripePaymentMethodId,
     } = req.body;
 
     console.log("Received order data:", req.body);
@@ -51,6 +53,21 @@ exports.createOrder = async (req, res) => {
         return res.status(400).json({
           status: "Error",
           message: "Invalid frequency for recurring payment",
+        });
+      }
+    }
+
+    // Validate installment payment details
+    if (paymentType === "installments") {
+      if (
+        !installmentDetails ||
+        !installmentDetails.numberOfInstallments ||
+        !installmentDetails.installmentAmount
+      ) {
+        return res.status(400).json({
+          status: "Error",
+          message:
+            "Installment payment requires numberOfInstallments and installmentAmount",
         });
       }
     }
@@ -96,10 +113,24 @@ exports.createOrder = async (req, res) => {
       };
     }
 
+    // Prepare installment details if applicable
+    let orderInstallmentDetails = null;
+    if (paymentType === "installments") {
+      orderInstallmentDetails = {
+        numberOfInstallments: installmentDetails.numberOfInstallments,
+        installmentAmount: installmentDetails.installmentAmount,
+        startDate: new Date(),
+        status: "active",
+        installmentsPaid: 0,
+        nextInstallmentDate: new Date(),
+        installmentHistory: [],
+      };
+    }
+
     // Create order with donationId
     const order = new Order({
       user: user ? user._id : null,
-      donationId, // Add donationId here
+      donationId,
       items: processedItems,
       paymentType,
       adminCostContribution: {
@@ -122,6 +153,8 @@ exports.createOrder = async (req, res) => {
       paymentStatus: paymentMethod === "bank" ? "pending" : "processing",
       totalAmount,
       recurringDetails: orderRecurringDetails,
+      installmentDetails: orderInstallmentDetails,
+      transactionDetails: {},
     });
 
     // Attempt to save with retries in case of donationId collision
@@ -155,6 +188,380 @@ exports.createOrder = async (req, res) => {
 
     console.log("Order saved:", savedOrder);
 
+    // Process payment with Stripe if card is selected
+    if (paymentMethod === "card" && stripePaymentMethodId) {
+      try {
+        // Handle different payment types
+        if (paymentType === "single") {
+          // Process one-time payment
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: Math.round(totalAmount * 100), // Convert to cents
+            currency: "aud",
+            payment_method: stripePaymentMethodId,
+            confirm: true,
+            description: `Donation ${savedOrder.donationId}`,
+            metadata: {
+              donationId: savedOrder.donationId,
+              orderId: savedOrder._id.toString(),
+            },
+            automatic_payment_methods: {
+              enabled: true,
+              allow_redirects: "never",
+            },
+          });
+
+          // Update order with payment intent details
+          savedOrder.transactionDetails = {
+            stripePaymentIntentId: paymentIntent.id,
+            stripeStatus: paymentIntent.status,
+          };
+
+          // Update payment status based on Stripe status
+          if (paymentIntent.status === "succeeded") {
+            savedOrder.paymentStatus = "completed";
+          } else if (paymentIntent.status === "requires_action") {
+            savedOrder.paymentStatus = "requires_action";
+          }
+
+          await savedOrder.save();
+        } else if (paymentType === "recurring") {
+          // IMPROVED PAYMENT METHOD HANDLING
+          let customer;
+
+          try {
+            // First, try to retrieve the payment method
+            const paymentMethod = await stripe.paymentMethods.retrieve(
+              stripePaymentMethodId
+            );
+
+            // If it's already attached to a customer
+            if (paymentMethod.customer) {
+              console.log(
+                `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethod.customer}`
+              );
+
+              // Use that customer
+              customer = await stripe.customers.retrieve(
+                paymentMethod.customer
+              );
+              console.log(`Using existing customer ${customer.id}`);
+            } else {
+              // If it's not attached to any customer, create a new one
+              customer = await stripe.customers.create({
+                email: donorDetails.email,
+                name: donorDetails.name,
+                phone: donorDetails.phone,
+              });
+
+              console.log(`Created new customer ${customer.id}`);
+
+              // Then attach the payment method to the customer
+              await stripe.paymentMethods.attach(stripePaymentMethodId, {
+                customer: customer.id,
+              });
+
+              console.log(
+                `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
+              );
+            }
+
+            // Set it as the default payment method
+            await stripe.customers.update(customer.id, {
+              invoice_settings: {
+                default_payment_method: stripePaymentMethodId,
+              },
+            });
+
+            console.log(
+              `Set payment method ${stripePaymentMethodId} as default for customer ${customer.id}`
+            );
+          } catch (stripeError) {
+            console.error("Error handling payment method:", stripeError);
+
+            // Special handling for the "already attached" error
+            if (
+              stripeError.code === "payment_method_in_use" ||
+              stripeError.message.includes("already been attached")
+            ) {
+              try {
+                console.log("Handling 'already attached' error");
+
+                // Try to find the customer by looking up the payment method
+                const paymentMethod = await stripe.paymentMethods.retrieve(
+                  stripePaymentMethodId
+                );
+
+                if (paymentMethod.customer) {
+                  // Use the customer this payment method is already attached to
+                  customer = await stripe.customers.retrieve(
+                    paymentMethod.customer
+                  );
+                  console.log(
+                    `Using existing customer ${customer.id} that payment method is attached to`
+                  );
+                } else {
+                  // This shouldn't happen if we got an "already attached" error, but just in case
+                  throw new Error(
+                    "Payment method is reported as already attached but no customer found"
+                  );
+                }
+              } catch (secondError) {
+                console.error("Error in special handling:", secondError);
+                throw secondError;
+              }
+            } else {
+              // For other types of errors, just pass them along
+              throw stripeError;
+            }
+          }
+
+          // Convert frequency to Stripe interval
+          let interval;
+          switch (recurringDetails.frequency) {
+            case "daily": // Note: Stripe doesn't support daily, you might need a custom solution
+              interval = "day";
+              break;
+            case "weekly":
+              interval = "week";
+              break;
+            case "monthly":
+              interval = "month";
+              break;
+            case "yearly":
+              interval = "year";
+              break;
+            default:
+              interval = "month";
+          }
+
+          // First create the product
+          const product = await stripe.products.create({
+            name: "Recurring Donation",
+            metadata: {
+              donationId: savedOrder.donationId,
+            },
+          });
+
+          console.log(`Created product for recurring donation: ${product.id}`);
+
+          // Create the subscription with the product ID - MODIFIED to ensure immediate completion
+          const subscription = await stripe.subscriptions.create({
+            customer: customer.id,
+            items: [
+              {
+                price_data: {
+                  currency: "aud",
+                  product: product.id,
+                  unit_amount: Math.round(recurringDetails.amount * 100),
+                  recurring: {
+                    interval: interval,
+                  },
+                },
+              },
+            ],
+            // Removed payment_behavior: "default_incomplete"
+            payment_settings: {
+              save_default_payment_method: "on_subscription",
+              payment_method_types: ["card"],
+            },
+            default_payment_method: stripePaymentMethodId, // Explicitly set default payment method
+            expand: ["latest_invoice.payment_intent"],
+          });
+
+          console.log(
+            `Created subscription: ${subscription.id} for customer ${customer.id}, status: ${subscription.status}`
+          );
+
+          // Update order with subscription details
+          savedOrder.transactionDetails = {
+            stripeCustomerId: customer.id,
+            stripeSubscriptionId: subscription.id,
+            stripeStatus: subscription.status,
+            clientSecret:
+              subscription.latest_invoice.payment_intent?.client_secret,
+          };
+
+          // Set payment status based on subscription status
+          if (subscription.status === "active") {
+            savedOrder.paymentStatus = "completed";
+          } else if (subscription.status === "incomplete") {
+            savedOrder.paymentStatus = "requires_action";
+          }
+
+          await savedOrder.save();
+        } else if (paymentType === "installments") {
+          // IMPROVED PAYMENT METHOD HANDLING
+          let customer;
+
+          try {
+            // First, try to retrieve the payment method
+            const paymentMethod = await stripe.paymentMethods.retrieve(
+              stripePaymentMethodId
+            );
+
+            // If it's already attached to a customer
+            if (paymentMethod.customer) {
+              console.log(
+                `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethod.customer}`
+              );
+
+              // Use that customer
+              customer = await stripe.customers.retrieve(
+                paymentMethod.customer
+              );
+              console.log(`Using existing customer ${customer.id}`);
+            } else {
+              // If it's not attached to any customer, create a new one
+              customer = await stripe.customers.create({
+                email: donorDetails.email,
+                name: donorDetails.name,
+                phone: donorDetails.phone,
+              });
+
+              console.log(`Created new customer ${customer.id}`);
+
+              // Then attach the payment method to the customer
+              await stripe.paymentMethods.attach(stripePaymentMethodId, {
+                customer: customer.id,
+              });
+
+              console.log(
+                `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
+              );
+            }
+
+            // Set it as the default payment method
+            await stripe.customers.update(customer.id, {
+              invoice_settings: {
+                default_payment_method: stripePaymentMethodId,
+              },
+            });
+
+            console.log(
+              `Set payment method ${stripePaymentMethodId} as default for customer ${customer.id}`
+            );
+          } catch (stripeError) {
+            console.error("Error handling payment method:", stripeError);
+
+            // Special handling for the "already attached" error
+            if (
+              stripeError.code === "payment_method_in_use" ||
+              stripeError.message.includes("already been attached")
+            ) {
+              try {
+                console.log("Handling 'already attached' error");
+
+                // Try to find the customer by looking up the payment method
+                const paymentMethod = await stripe.paymentMethods.retrieve(
+                  stripePaymentMethodId
+                );
+
+                if (paymentMethod.customer) {
+                  // Use the customer this payment method is already attached to
+                  customer = await stripe.customers.retrieve(
+                    paymentMethod.customer
+                  );
+                  console.log(
+                    `Using existing customer ${customer.id} that payment method is attached to`
+                  );
+                } else {
+                  // This shouldn't happen if we got an "already attached" error, but just in case
+                  throw new Error(
+                    "Payment method is reported as already attached but no customer found"
+                  );
+                }
+              } catch (secondError) {
+                console.error("Error in special handling:", secondError);
+                throw secondError;
+              }
+            } else {
+              // For other types of errors, just pass them along
+              throw stripeError;
+            }
+          }
+
+          // Process first installment - MODIFIED to match recurring improvement approach
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: Math.round(installmentDetails.installmentAmount * 100),
+            currency: "aud",
+            customer: customer.id,
+            payment_method: stripePaymentMethodId,
+            automatic_payment_methods: {
+              enabled: true,
+              allow_redirects: "never",
+            },
+            confirm: true,
+            off_session: true, // Added to attempt immediate processing
+            description: `Installment 1/${installmentDetails.numberOfInstallments} for Donation ${savedOrder.donationId}`,
+            metadata: {
+              donationId: savedOrder.donationId,
+              orderId: savedOrder._id.toString(),
+              installment: 1,
+              totalInstallments: installmentDetails.numberOfInstallments,
+            },
+          });
+
+          console.log(`Created first installment payment: ${paymentIntent.id}`);
+
+          // Store customer ID for future installments
+          savedOrder.transactionDetails = {
+            stripeCustomerId: customer.id,
+            stripePaymentIntentId: paymentIntent.id,
+            stripeStatus: paymentIntent.status,
+            clientSecret: paymentIntent.client_secret,
+          };
+
+          // Update installment details
+          if (savedOrder.installmentDetails) {
+            savedOrder.installmentDetails.installmentsPaid = 1;
+            savedOrder.installmentDetails.nextInstallmentDate = new Date(
+              Date.now() + 30 * 24 * 60 * 60 * 1000
+            ); // 30 days from now
+
+            // Add to payment history
+            savedOrder.installmentDetails.installmentHistory.push({
+              installmentNumber: 1,
+              amount: installmentDetails.installmentAmount,
+              date: new Date(),
+              status:
+                paymentIntent.status === "succeeded"
+                  ? "completed"
+                  : "processing",
+              transactionId: paymentIntent.id,
+            });
+          }
+
+          // Set payment status
+          if (paymentIntent.status === "succeeded") {
+            // For installments, we keep the order in "processing" until all installments are paid
+            savedOrder.paymentStatus = "processing";
+          } else if (paymentIntent.status === "requires_action") {
+            savedOrder.paymentStatus = "requires_action";
+          }
+
+          await savedOrder.save();
+        }
+      } catch (stripeError) {
+        console.error("Stripe payment error:", stripeError);
+
+        // Update order status to failed
+        savedOrder.paymentStatus = "failed";
+        savedOrder.transactionDetails = {
+          error: stripeError.message,
+        };
+        await savedOrder.save();
+
+        return res.status(400).json({
+          status: "Error",
+          message: `Payment processing failed: ${stripeError.message}`,
+          order: {
+            _id: savedOrder._id,
+            donationId: savedOrder.donationId,
+          },
+        });
+      }
+    }
+
     // Send response
     res.status(201).json({
       status: "Success",
@@ -165,6 +572,8 @@ exports.createOrder = async (req, res) => {
         totalAmount: savedOrder.totalAmount,
         paymentStatus: savedOrder.paymentStatus,
         recurringDetails: orderRecurringDetails,
+        installmentDetails: orderInstallmentDetails,
+        transactionDetails: savedOrder.transactionDetails,
         paymentInstructions:
           paymentMethod === "bank"
             ? {
@@ -185,6 +594,7 @@ exports.createOrder = async (req, res) => {
     });
   }
 };
+
 exports.getOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user: req.user._id })

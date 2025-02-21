@@ -4,31 +4,45 @@ const router = express.Router();
 const subscriptionController = require("../controllers/subscriptionController");
 const auth = require("../middleware/auth");
 
+// Get active subscriptions for the authenticated user
+router.get("/active", auth, subscriptionController.getActiveSubscriptions);
 
+// Get a specific subscription by ID
 router.get(
-  "/active",
+  "/:subscriptionId",
   auth,
-  subscriptionController.getActiveSubscriptions
+  subscriptionController.getSubscriptionById
 );
+
+// Pause a subscription
 router.post(
   "/:subscriptionId/pause",
   auth,
   subscriptionController.pauseSubscription
 );
+
+// Resume a subscription
 router.post(
   "/:subscriptionId/resume",
   auth,
   subscriptionController.resumeSubscription
 );
+
+// Cancel a subscription
 router.post(
   "/:subscriptionId/cancel",
   auth,
   subscriptionController.cancelSubscription
 );
-router.put(
-  "/:subscriptionId/amount",
+
+// Update subscription amount
+router.post(
+  "/:subscriptionId/update-amount",
   auth,
   subscriptionController.updateSubscriptionAmount
 );
+
+// Stripe webhook handler (no auth required as it comes from Stripe)
+router.post("/webhook", subscriptionController.handleStripeWebhook);
 
 module.exports = router;

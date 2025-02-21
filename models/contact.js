@@ -27,7 +27,7 @@ const contactRequestSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    businessDetails: {
+    description: {
       type: String,
       required: true,
     },
@@ -35,7 +35,7 @@ const contactRequestSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
-    minimumDonationAmount: {
+    minimumDonation: {
       type: Number,
       required: true,
     },

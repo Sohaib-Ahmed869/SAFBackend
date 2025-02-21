@@ -90,6 +90,14 @@ router.get("/", isAdmin, async (req, res) => {
 
     // Aggregate pipeline to get donor information
     const aggregatePipeline = [
+      // First filter out cancelled orders
+      {
+        $match: {
+          // Only include non-cancelled orders, so remove cancelled orders and failed payments and only include completed and active payments
+          status: { $ne: "cancelled" },
+          paymentStatus: { $in: ["completed", "active"] },
+        },
+      },
       {
         $lookup: {
           from: "users",
@@ -134,8 +142,14 @@ router.get("/", isAdmin, async (req, res) => {
 
     const donors = await Order.aggregate(aggregatePipeline);
 
-    // Get total count for pagination
+    // Get total count for pagination (also filtered by non-cancelled orders)
     const totalCount = await Order.aggregate([
+      // Add the same filter here too
+      {
+        $match: {
+          status: { $ne: "cancelled" }, // Only include non-cancelled orders
+        },
+      },
       {
         $lookup: {
           from: "users",
