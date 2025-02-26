@@ -9,5 +9,7 @@ router.post("/registerAdmin", userController.registerAdmin);
 router.post("/loginAdmin", userController.loginAdmin);
 router.post("/forgot-password", userController.forgotPassword);
 router.post("/reset-password/:token", userController.resetPassword);
+router.post('/auth/google', userController.googleAuth);
+
 
 module.exports = router;

@@ -1,5 +1,6 @@
 // controllers/admin/eventController.js
 const Event = require("../../models/event");
+const { s3Client, deleteS3Object } = require("../../config/s3");
 
 // Get all events with filtering and pagination
 exports.getEvents = async (req, res) => {
@@ -91,35 +92,42 @@ exports.getEvent = async (req, res) => {
   }
 };
 
-// Create new event
+// Create new event with image upload
 exports.createEvent = async (req, res) => {
   try {
-    const {
-      title,
-      date,
-      startTime,
-      endTime,
-      timezone,
-      location,
-      description,
-      imageUrl,
-      registrationLink,
-      status,
-    } = req.body;
+    // Parse the location JSON if it comes as a string
+    let location = req.body.location;
+    if (typeof location === "string") {
+      try {
+        location = JSON.parse(location);
+      } catch (e) {
+        console.error("Error parsing location JSON:", e);
+        location = {};
+      }
+    }
 
-    console.log(req.body);
+    // If we have a file uploaded, use its S3 location; otherwise, use imageUrl from the body
+    const imageUrl = req.file ? req.file.location : req.body.imageUrl;
+
+    // Validate that we have an image
+    if (!imageUrl) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Event image is required",
+      });
+    }
 
     const event = new Event({
-      title,
-      date,
-      startTime,
-      endTime,
-      timezone,
+      title: req.body.title,
+      date: req.body.date,
+      startTime: req.body.startTime,
+      endTime: req.body.endTime,
+      timezone: req.body.timezone,
       location,
-      description,
+      description: req.body.description,
       imageUrl,
-      registrationLink,
-      status: status || "upcoming",
+      registrationLink: req.body.registrationLink,
+      status: req.body.status || "upcoming",
     });
 
     await event.save();
@@ -139,21 +147,73 @@ exports.createEvent = async (req, res) => {
   }
 };
 
-// Update event
+// Update event with image upload
 exports.updateEvent = async (req, res) => {
   try {
-    const event = await Event.findByIdAndUpdate(
-      req.params.id,
-      { $set: req.body },
-      { new: true, runValidators: true }
-    );
+    // Get the current event
+    const currentEvent = await Event.findById(req.params.id);
 
-    if (!event) {
+    if (!currentEvent) {
       return res.status(404).json({
         status: "Error",
         message: "Event not found",
       });
     }
+
+    // Parse the location JSON if it comes as a string
+    let location = req.body.location;
+    if (typeof location === "string") {
+      try {
+        location = JSON.parse(location);
+      } catch (e) {
+        console.error("Error parsing location JSON:", e);
+        // Keep the existing location if parsing fails
+        location = currentEvent.location;
+      }
+    }
+
+    // Prepare the update data
+    const updateData = {
+      title: req.body.title,
+      date: req.body.date,
+      startTime: req.body.startTime,
+      endTime: req.body.endTime,
+      timezone: req.body.timezone,
+      location,
+      description: req.body.description,
+      registrationLink: req.body.registrationLink,
+      status: req.body.status,
+    };
+
+    // If we have a file uploaded, use its S3 location
+    if (req.file) {
+      updateData.imageUrl = req.file.location;
+
+      // Delete the old image from S3 if it exists and is from our S3 bucket
+      if (
+        currentEvent.imageUrl &&
+        currentEvent.imageUrl.includes(process.env.S3_BUCKET_NAME)
+      ) {
+        try {
+          // Extract the key from the S3 URL
+          const key = currentEvent.imageUrl.split("/").slice(3).join("/");
+
+          await deleteS3Object(key);
+
+          console.log(`Deleted old image: ${key}`);
+        } catch (deleteError) {
+          console.error("Error deleting old image:", deleteError);
+          // Continue with the update even if deleting old image fails
+        }
+      }
+    }
+
+    // Update the event
+    const event = await Event.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
 
     res.json({
       status: "Success",
@@ -172,7 +232,7 @@ exports.updateEvent = async (req, res) => {
 // Delete event
 exports.deleteEvent = async (req, res) => {
   try {
-    const event = await Event.findByIdAndDelete(req.params.id);
+    const event = await Event.findById(req.params.id);
 
     if (!event) {
       return res.status(404).json({
@@ -180,6 +240,24 @@ exports.deleteEvent = async (req, res) => {
         message: "Event not found",
       });
     }
+
+    // Delete the image from S3 if it exists and is from our S3 bucket
+    if (event.imageUrl && event.imageUrl.includes(process.env.S3_BUCKET_NAME)) {
+      try {
+        // Extract the key from the S3 URL
+        const key = event.imageUrl.split("/").slice(3).join("/");
+
+        await deleteS3Object(key);
+
+        console.log(`Deleted image: ${key}`);
+      } catch (deleteError) {
+        console.error("Error deleting image:", deleteError);
+        // Continue with the deletion even if deleting image fails
+      }
+    }
+
+    // Delete the event
+    await Event.findByIdAndDelete(req.params.id);
 
     res.json({
       status: "Success",

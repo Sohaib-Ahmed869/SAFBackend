@@ -2,6 +2,7 @@
 const Order = require("../models/order");
 const User = require("../models/user");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const { sendReceiptEmail } = require("../services/recieptUtils");
 exports.createOrder = async (req, res) => {
   try {
     const {
@@ -218,6 +219,13 @@ exports.createOrder = async (req, res) => {
 
           // Update payment status based on Stripe status
           if (paymentIntent.status === "succeeded") {
+            // Send receipt email for completed payments
+            try {
+              await sendReceiptEmail(savedOrder);
+            } catch (emailError) {
+              console.error("Failed to send receipt email:", emailError);
+              // Don't fail the order if email fails
+            }
             savedOrder.paymentStatus = "completed";
           } else if (paymentIntent.status === "requires_action") {
             savedOrder.paymentStatus = "requires_action";
@@ -384,6 +392,13 @@ exports.createOrder = async (req, res) => {
           // Set payment status based on subscription status
           if (subscription.status === "active") {
             savedOrder.paymentStatus = "completed";
+            // Send receipt email for completed payments
+            try {
+              await sendReceiptEmail(savedOrder);
+            } catch (emailError) {
+              console.error("Failed to send receipt email:", emailError);
+              // Don't fail the order if email fails
+            }
           } else if (subscription.status === "incomplete") {
             savedOrder.paymentStatus = "requires_action";
           }
@@ -533,6 +548,13 @@ exports.createOrder = async (req, res) => {
 
           // Set payment status
           if (paymentIntent.status === "succeeded") {
+            // Send receipt email for completed payments
+            try {
+              await sendReceiptEmail(savedOrder);
+            } catch (emailError) {
+              console.error("Failed to send receipt email:", emailError);
+              // Don't fail the order if email fails
+            }
             // For installments, we keep the order in "processing" until all installments are paid
             savedOrder.paymentStatus = "processing";
           } else if (paymentIntent.status === "requires_action") {

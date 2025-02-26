@@ -3,6 +3,8 @@ const User = require("../models/user");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
+const { OAuth2Client } = require("google-auth-library");
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { sendEmail } = require("../services/emailUtil");
 
 const generateToken = (id) => {
@@ -269,6 +271,68 @@ exports.resetPassword = async (req, res) => {
     res.status(500).json({
       status: "Error",
       message: "Error resetting password",
+      error: error.message,
+    });
+  }
+};
+
+exports.googleAuth = async (req, res) => {
+  try {
+    const token = req.body.credential;
+    console.log("Received token:", token);
+    if (!token) {
+      return res.status(400).json({
+        status: "Error",
+        message: "No ID token provided",
+      });
+    }
+
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const googleId = payload.sub;
+    const email = payload.email;
+    const name = payload.name;
+    const picture = payload.picture;
+
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = new User({
+        name,
+        email,
+        authProvider: "google",
+        googleId,
+        profileImage: picture,
+      });
+      await user.save();
+    } else {
+      if (!user.googleId) {
+        user.googleId = googleId;
+        user.authProvider = "google";
+        await user.save();
+      }
+    }
+
+    const jwtToken = generateToken(user._id);
+    res.status(200).json({
+      status: "Success",
+      message: "Google Authentication successful",
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+      token: jwtToken,
+    });
+  } catch (error) {
+    console.error("Google auth error:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Google authentication failed",
       error: error.message,
     });
   }

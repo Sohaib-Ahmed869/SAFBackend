@@ -11,18 +11,24 @@ const transporter = nodemailer.createTransport({
 });
 
 // Utility function to send an email
-const sendEmail = async (recipientEmail, emailBody, emailSubject) => {
+const sendEmail = async (
+  recipientEmail,
+  emailBody,
+  emailSubject,
+  attachments = []
+) => {
   try {
     const mailOptions = {
       from: `"Shahid Afridi Foundation" <${process.env.EMAIL_USER}>`,
       to: recipientEmail, // Recipient's email address
       subject: emailSubject, // Subject of the email
-      text: emailBody, // Plain text body
+      text: emailBody.replace(/<[^>]*>/g, ""), // Plain text body (strip HTML)
       html: ` 
         <div>
-          <p>${emailBody}</p>
+          ${emailBody}
         </div>
        `,
+      attachments: attachments,
     };
 
     // Send the email
@@ -35,4 +41,4 @@ const sendEmail = async (recipientEmail, emailBody, emailSubject) => {
   }
 };
 
-module.exports = { sendEmail };
+module.exports = { sendEmail, transporter };
