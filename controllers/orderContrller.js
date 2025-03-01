@@ -3,6 +3,153 @@ const Order = require("../models/order");
 const User = require("../models/user");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { sendReceiptEmail } = require("../services/recieptUtils");
+const { sendEmail } = require("../services/emailUtil");
+const crypto = require("crypto");
+const bcrypt = require("bcrypt");
+/**
+ * Creates a user account for anonymous donors and sends credentials email
+ * @param {Object} donorDetails - Donor information from the order
+ * @param {String} donationId - The donation ID to include in the email
+ * @returns {Object} The created user or null if creation failed
+ */
+const createUserForDonor = async (donorDetails, donationId) => {
+  try {
+    // Check if user with this email already exists
+    const existingUser = await User.findOne({ email: donorDetails.email });
+
+    if (existingUser) {
+      console.log(
+        `User with email ${donorDetails.email} already exists, skipping creation`
+      );
+      return existingUser;
+    }
+
+    // Generate a random password
+    const password = crypto.randomBytes(8).toString("hex");
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    // Create new user
+    const newUser = new User({
+      email: donorDetails.email,
+      password: hashedPassword,
+      name: donorDetails.name,
+      phone: donorDetails.phone,
+      role: "user",
+    });
+
+    // Save the user
+    await newUser.save();
+    console.log(`Created new user account for donor: ${donorDetails.email}`);
+
+    // Send welcome email with credentials
+    const loginUrl =
+      "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com/login";
+
+    const emailSubject =
+      "Welcome to Shahid Afridi Foundation - Your Account Details";
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="https://safdn.ips.gen.in/wp-content/uploads/2023/11/SAF-Logo-Original-01-1.png" alt="Shahid Afridi Foundation Logo" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4CAF50; text-align: center;">Thank You for Your Donation!</h2>
+        
+        <p>Dear ${donorDetails.name},</p>
+        
+        <p>Thank you for your generous donation (ID: <strong>${donationId}</strong>) to the Shahid Afridi Foundation. Your contribution will help us make a meaningful difference in the lives of those in need.</p>
+        
+        <p>We've created an account for you so you can easily track your donations and manage your giving in the future.</p>
+        
+        <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <p><strong>Your Account Details:</strong></p>
+          <p>Email: ${donorDetails.email}</p>
+          <p>Password: ${password}</p>
+          <p style="font-size: 12px; color: #666;">Please keep this information secure. We recommend changing your password after your first login.</p>
+        </div>
+        
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${loginUrl}" style="background-color: #4CAF50; color: white; padding: 12px 25px; text-decoration: none; border-radius: 4px; font-weight: bold;">Login to Your Account</a>
+        </div>
+        
+        <p>If you have any questions or need assistance, please don't hesitate to contact our team.</p>
+        
+        <p>Warm regards,<br>The Shahid Afridi Foundation Team</p>
+        
+        <div style="font-size: 12px; color: #666; border-top: 1px solid #e0e0e0; margin-top: 20px; padding-top: 20px;">
+          <p>This is an automated email. Please do not reply to this message.</p>
+        </div>
+      </div>
+    `;
+
+    await sendEmail(donorDetails.email, emailBody, emailSubject);
+    console.log(`Sent welcome email to: ${donorDetails.email}`);
+
+    return newUser;
+  } catch (error) {
+    console.error("Error creating user for donor:", error);
+    return null;
+  }
+};
+/**
+ * Generates a unique donation ID with optional user donor prefix
+ * @param {Object} user - The user object (optional)
+ * @returns {string} - Unique donation ID in format: UUUUNNNN where U=User ID digits, N=Random number
+ */
+const generateDonationId = (user = null) => {
+  const date = new Date();
+
+  // Generate the user/donor prefix (4 characters)
+  let userPrefix = "";
+
+  if (user && user._id) {
+    // If user exists, use the last 4 characters of their ID
+    const userId = user._id.toString();
+    userPrefix = userId.substring(Math.max(0, userId.length - 4));
+  } else {
+    // Otherwise, generate 4 random characters
+    userPrefix = Math.floor(1000 + Math.random() * 9000).toString();
+  }
+
+  // Generate 4 random digits for the donation part
+  const randomNum = Math.floor(1000 + Math.random() * 9000).toString();
+
+  // Combine to create full donation ID
+  return `${userPrefix}${randomNum}`;
+};
+
+/**
+ * Generates a donation ID with a retry mechanism in case of collision
+ * @param {Function} checkExistsFn - Function that checks if ID exists, returns Promise<boolean>
+ * @param {Object} user - The user object (optional)
+ * @param {number} maxRetries - Maximum number of retry attempts
+ * @returns {Promise<string>} - A unique donation ID
+ */
+const generateUniqueDonationId = async (
+  checkExistsFn,
+  user = null,
+  maxRetries = 3
+) => {
+  let retries = 0;
+
+  while (retries < maxRetries) {
+    const donationId = generateDonationId(user);
+
+    // Check if this ID already exists
+    const exists = await checkExistsFn(donationId);
+
+    if (!exists) {
+      return donationId;
+    }
+
+    retries++;
+  }
+
+  throw new Error(
+    "Failed to generate unique donation ID after multiple attempts"
+  );
+};
+
 exports.createOrder = async (req, res) => {
   try {
     const {
@@ -27,14 +174,15 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // Generate donation ID
-    const date = new Date();
-    const year = date.getFullYear().toString().substr(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, "0");
-    const randomNum = Math.floor(Math.random() * 10000)
-      .toString()
-      .padStart(4, "0");
-    const donationId = `D${year}${month}${randomNum}`;
+    // Get user from request
+    const user = req.user;
+
+    // Generate unique donation ID with user info
+    const donationId = await generateUniqueDonationId(async (id) => {
+      // Check if ID exists in database
+      const existingOrder = await Order.findOne({ donationId: id });
+      return !!existingOrder;
+    }, user);
 
     // Validate recurring payment details
     if (paymentType === "recurring") {
@@ -71,10 +219,19 @@ exports.createOrder = async (req, res) => {
             "Installment payment requires numberOfInstallments and installmentAmount",
         });
       }
+
+      // Validate number of installments (1-12 months)
+      if (
+        installmentDetails.numberOfInstallments < 1 ||
+        installmentDetails.numberOfInstallments > 12
+      ) {
+        return res.status(400).json({
+          status: "Error",
+          message: "Number of installments must be between 1 and 12",
+        });
+      }
     }
 
-    // Create or update donor information if user exists
-    const user = req.user;
     if (donorDetails.rememberDetails && user) {
       await User.findByIdAndUpdate(user._id, {
         name: donorDetails.name,
@@ -117,6 +274,9 @@ exports.createOrder = async (req, res) => {
     // Prepare installment details if applicable
     let orderInstallmentDetails = null;
     if (paymentType === "installments") {
+      // Calculate interval in days between payments (30 days for monthly)
+      const paymentIntervalDays = 30;
+
       orderInstallmentDetails = {
         numberOfInstallments: installmentDetails.numberOfInstallments,
         installmentAmount: installmentDetails.installmentAmount,
@@ -125,6 +285,7 @@ exports.createOrder = async (req, res) => {
         installmentsPaid: 0,
         nextInstallmentDate: new Date(),
         installmentHistory: [],
+        paymentIntervalDays: paymentIntervalDays,
       };
     }
 
@@ -189,6 +350,30 @@ exports.createOrder = async (req, res) => {
 
     console.log("Order saved:", savedOrder);
 
+    if (!user && donorDetails.email) {
+      try {
+        const newUser = await createUserForDonor(
+          donorDetails,
+          savedOrder.donationId
+        );
+
+        if (newUser) {
+          // Link the order to the newly created user
+          savedOrder.user = newUser._id;
+          await savedOrder.save();
+          console.log(
+            `Linked order ${savedOrder._id} to new user ${newUser._id}`
+          );
+        }
+      } catch (userCreateError) {
+        // Log error but don't fail the order
+        console.error(
+          "Failed to create user account for donor:",
+          userCreateError
+        );
+      }
+    }
+
     // Process payment with Stripe if card is selected
     if (paymentMethod === "card" && stripePaymentMethodId) {
       try {
@@ -196,25 +381,40 @@ exports.createOrder = async (req, res) => {
         if (paymentType === "single") {
           // Process one-time payment
           const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(totalAmount * 100), // Convert to cents
+            amount: Math.round(installmentDetails.installmentAmount * 100),
             currency: "aud",
+            customer: customer.id,
             payment_method: stripePaymentMethodId,
-            confirm: true,
-            description: `Donation ${savedOrder.donationId}`,
-            metadata: {
-              donationId: savedOrder.donationId,
-              orderId: savedOrder._id.toString(),
-            },
             automatic_payment_methods: {
               enabled: true,
               allow_redirects: "never",
             },
+            confirm: true,
+            off_session: true, // Added to attempt immediate processing
+            description: `Installment 1/${installmentDetails.numberOfInstallments} for Donation ${savedOrder.donationId}`,
+            metadata: {
+              donationId: savedOrder.donationId,
+              orderId: savedOrder._id.toString(),
+              installment: 1,
+              totalInstallments: installmentDetails.numberOfInstallments,
+              installmentAmount:
+                installmentDetails.installmentAmount.toString(),
+              nextInstallmentDate: new Date(
+                Date.now() + 30 * 24 * 60 * 60 * 1000
+              ).toISOString(),
+              paymentIntervalDays: "30", // Monthly payments
+            },
           });
-
           // Update order with payment intent details
           savedOrder.transactionDetails = {
+            stripeCustomerId: customer.id,
+            stripePaymentMethodId: stripePaymentMethodId, // Store this for future installments
             stripePaymentIntentId: paymentIntent.id,
             stripeStatus: paymentIntent.status,
+            clientSecret: paymentIntent.client_secret,
+            nextInstallmentDate: new Date(
+              Date.now() + 30 * 24 * 60 * 60 * 1000
+            ),
           };
 
           // Update payment status based on Stripe status
@@ -529,9 +729,12 @@ exports.createOrder = async (req, res) => {
           // Update installment details
           if (savedOrder.installmentDetails) {
             savedOrder.installmentDetails.installmentsPaid = 1;
+
+            // Calculate next installment date (30 days from now)
+            const paymentIntervalDays = 30; // Monthly interval
             savedOrder.installmentDetails.nextInstallmentDate = new Date(
-              Date.now() + 30 * 24 * 60 * 60 * 1000
-            ); // 30 days from now
+              Date.now() + paymentIntervalDays * 24 * 60 * 60 * 1000
+            );
 
             // Add to payment history
             savedOrder.installmentDetails.installmentHistory.push({
@@ -829,4 +1032,142 @@ const calculateNextPaymentDate = (startDate, frequency) => {
   }
 
   return nextDate;
+};
+
+/**
+ * Process the next installment payment for an order
+ * @param {string} orderId - The order ID to process the next installment for
+ */
+exports.processNextInstallment = async (orderId) => {
+  try {
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      console.error(`Order not found: ${orderId}`);
+      return;
+    }
+
+    // Check if this is an installment order with remaining installments
+    if (
+      order.paymentType !== "installments" ||
+      !order.installmentDetails ||
+      order.installmentDetails.status !== "active" ||
+      order.installmentDetails.installmentsPaid >=
+        order.installmentDetails.numberOfInstallments
+    ) {
+      console.log(`No installment to process for order: ${orderId}`);
+      return;
+    }
+
+    // Check if it's time to process the next installment
+    const now = new Date();
+    const nextDate = new Date(order.installmentDetails.nextInstallmentDate);
+
+    if (now < nextDate) {
+      console.log(`Not yet time for next installment for order: ${orderId}`);
+      return;
+    }
+
+    console.log(
+      `Processing installment ${
+        order.installmentDetails.installmentsPaid + 1
+      }/${order.installmentDetails.numberOfInstallments} for order: ${orderId}`
+    );
+
+    const installmentNumber = order.installmentDetails.installmentsPaid + 1;
+
+    // Process payment with Stripe
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(order.installmentDetails.installmentAmount * 100),
+      currency: "aud",
+      customer: order.transactionDetails.stripeCustomerId,
+      payment_method: order.transactionDetails.stripePaymentMethodId,
+      automatic_payment_methods: {
+        enabled: true,
+        allow_redirects: "never",
+      },
+      confirm: true,
+      off_session: true,
+      description: `Installment ${installmentNumber}/${order.installmentDetails.numberOfInstallments} for Donation ${order.donationId}`,
+      metadata: {
+        donationId: order.donationId,
+        orderId: order._id.toString(),
+        installment: installmentNumber,
+        totalInstallments: order.installmentDetails.numberOfInstallments,
+      },
+    });
+
+    // Update order with payment result
+    order.installmentDetails.installmentsPaid = installmentNumber;
+
+    // Calculate next installment date
+    if (installmentNumber < order.installmentDetails.numberOfInstallments) {
+      order.installmentDetails.nextInstallmentDate = new Date(
+        Date.now() + 30 * 24 * 60 * 60 * 1000
+      );
+    } else {
+      // Final installment
+      order.installmentDetails.status = "completed";
+      order.paymentStatus = "completed";
+    }
+
+    // Add to installment history
+    order.installmentDetails.installmentHistory.push({
+      installmentNumber: installmentNumber,
+      amount: order.installmentDetails.installmentAmount,
+      date: new Date(),
+      status: paymentIntent.status === "succeeded" ? "completed" : "processing",
+      transactionId: paymentIntent.id,
+    });
+
+    await order.save();
+
+    console.log(
+      `Successfully processed installment ${installmentNumber} for order: ${orderId}`
+    );
+
+    // Send receipt email for completed installment
+    try {
+      const { sendReceiptEmail } = require("../services/recieptUtils");
+      await sendReceiptEmail(order, installmentNumber);
+    } catch (emailError) {
+      console.error("Failed to send receipt email:", emailError);
+      // Don't fail the order update if email fails
+    }
+
+    return { success: true, paymentIntent };
+  } catch (error) {
+    console.error(`Error processing installment for order ${orderId}:`, error);
+
+    // Try to update the order with error information
+    try {
+      const order = await Order.findById(orderId);
+      if (order && order.installmentDetails) {
+        // Add failure to history but don't increment installmentsPaid
+        order.installmentDetails.installmentHistory.push({
+          installmentNumber: order.installmentDetails.installmentsPaid + 1,
+          amount: order.installmentDetails.installmentAmount,
+          date: new Date(),
+          status: "failed",
+          error: error.message,
+        });
+
+        // Try again in 24 hours
+        order.installmentDetails.nextInstallmentDate = new Date(
+          Date.now() + 24 * 60 * 60 * 1000
+        );
+
+        await order.save();
+      }
+    } catch (updateError) {
+      console.error(
+        "Failed to update order with error information:",
+        updateError
+      );
+    }
+
+    return { success: false, error: error.message };
+  }
 };

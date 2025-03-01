@@ -19,16 +19,17 @@ const subscriptionRoutesAdmin = require("./routes/admin/subscription.routes");
 const eventRoutesAdmin = require("./routes/admin/event.routes");
 const joinRoutes = require("./routes/joinRoutes");
 const newsLetter = require("./models/newsletter");
+const setupInstallmentProcessingJob = require("./jobs/processInstallments");
 const app = express();
 
 // Connect to database
 connectDB();
-
+setupInstallmentProcessingJob();
 // Middleware
 app.use(
   cors({
-    origin: "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com",
-    // origin: "*",
+    //  origin: "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com",
+    origin: "*",
   })
 );
 app.use(express.json());

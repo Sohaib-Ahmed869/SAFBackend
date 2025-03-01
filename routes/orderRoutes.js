@@ -3,9 +3,10 @@ const express = require("express");
 const router = express.Router();
 const orderController = require("../controllers/orderContrller");
 const auth = require("../middleware/auth");
+const optionalAuth = require("../middleware/optionalAuth");
 
 // Public routes (no authentication required)
-router.post("/create",auth, orderController.createOrder); // Allow anonymous donations
+router.post("/create",optionalAuth, orderController.createOrder); // Allow anonymous donations
 
 // Protected routes (authentication required)
 router.get("/my-orders", auth, orderController.getOrders);

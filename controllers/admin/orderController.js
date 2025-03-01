@@ -162,6 +162,8 @@ exports.getDonations = async (req, res) => {
       status: donation.paymentStatus,
       type: donation.paymentType,
       recurringDetails: donation.recurringDetails,
+      donationId: donation.donationId,
+      
     }));
 
     res.json({
@@ -205,14 +207,111 @@ exports.getDonationsExport = async (req, res) => {
 
 exports.getDonationForUser = async (req, res) => {
   try {
-    const { userId } = req.params;
-    const donations = await Order.find({ user: userId }).lean();
+    const { id } = req.params;
+    const donations = await Order.find({ user: id }).lean();
 
     res.json({ donations });
   } catch (error) {
+    console.log(error);
     res.status(500).json({
       status: "Error",
       message: "Failed to fetch donations",
+      error: error.message,
+    });
+  }
+};
+
+exports.getDonationById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const donation = await Order.findById(id)
+      .populate("user", "name email")
+      .lean();
+
+    if (!donation) {
+      return res.status(404).json({
+        status: "Error",
+        message: "Donation not found",
+      });
+    }
+
+    res.json({
+      donation,
+    });
+  } catch (error) {
+    console.error("Error fetching donation:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to fetch donation details",
+      error: error.message,
+    });
+  }
+};
+
+// Update donation status
+exports.updateDonationStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { paymentStatus } = req.body;
+
+    if (!paymentStatus) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Payment status is required",
+      });
+    }
+
+    const validStatuses = [
+      "pending",
+      "processing",
+      "completed",
+      "failed",
+      "cancelled",
+    ];
+    if (!validStatuses.includes(paymentStatus)) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Invalid payment status",
+      });
+    }
+
+    const donation = await Order.findById(id);
+
+    if (!donation) {
+      return res.status(404).json({
+        status: "Error",
+        message: "Donation not found",
+      });
+    }
+
+    donation.paymentStatus = paymentStatus;
+
+    // If completing a payment that was in installments or recurring, update status
+    if (paymentStatus === "completed") {
+      if (
+        donation.paymentType === "installments" &&
+        donation.installmentDetails
+      ) {
+        donation.installmentDetails.status = "completed";
+      }
+
+      if (donation.paymentType === "recurring" && donation.recurringDetails) {
+        donation.recurringDetails.status = "completed";
+      }
+    }
+
+    await donation.save();
+
+    res.json({
+      status: "Success",
+      message: "Donation status updated successfully",
+      donation,
+    });
+  } catch (error) {
+    console.error("Error updating donation status:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to update donation status",
       error: error.message,
     });
   }
