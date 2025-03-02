@@ -28,8 +28,7 @@ setupInstallmentProcessingJob();
 // Middleware
 app.use(
   cors({
-    //  origin: "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com",
-    origin: "*",
+    origin: "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com"
   })
 );
 app.use(express.json());
