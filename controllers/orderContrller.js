@@ -49,9 +49,7 @@ const createUserForDonor = async (donorDetails, donationId) => {
       "Welcome to Shahid Afridi Foundation - Your Account Details";
     const emailBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
-        <div style="text-align: center; margin-bottom: 20px;">
-          <img src="https://safdn.ips.gen.in/wp-content/uploads/2023/11/SAF-Logo-Original-01-1.png" alt="Shahid Afridi Foundation Logo" style="max-width: 150px;">
-        </div>
+      
         
         <h2 style="color: #4CAF50; text-align: center;">Thank You for Your Donation!</h2>
         
@@ -377,44 +375,27 @@ exports.createOrder = async (req, res) => {
     // Process payment with Stripe if card is selected
     if (paymentMethod === "card" && stripePaymentMethodId) {
       try {
-        // Handle different payment types
         if (paymentType === "single") {
           // Process one-time payment
           const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(installmentDetails.installmentAmount * 100),
+            amount: Math.round(totalAmount * 100),
             currency: "aud",
-            customer: customer.id,
             payment_method: stripePaymentMethodId,
-            automatic_payment_methods: {
-              enabled: true,
-              allow_redirects: "never",
-            },
             confirm: true,
-            off_session: true, // Added to attempt immediate processing
-            description: `Installment 1/${installmentDetails.numberOfInstallments} for Donation ${savedOrder.donationId}`,
+            off_session: true,
+            description: `Donation ${savedOrder.donationId}`,
             metadata: {
               donationId: savedOrder.donationId,
               orderId: savedOrder._id.toString(),
-              installment: 1,
-              totalInstallments: installmentDetails.numberOfInstallments,
-              installmentAmount:
-                installmentDetails.installmentAmount.toString(),
-              nextInstallmentDate: new Date(
-                Date.now() + 30 * 24 * 60 * 60 * 1000
-              ).toISOString(),
-              paymentIntervalDays: "30", // Monthly payments
             },
           });
+
           // Update order with payment intent details
           savedOrder.transactionDetails = {
-            stripeCustomerId: customer.id,
-            stripePaymentMethodId: stripePaymentMethodId, // Store this for future installments
+            stripePaymentMethodId,
             stripePaymentIntentId: paymentIntent.id,
             stripeStatus: paymentIntent.status,
             clientSecret: paymentIntent.client_secret,
-            nextInstallmentDate: new Date(
-              Date.now() + 30 * 24 * 60 * 60 * 1000
-            ),
           };
 
           // Update payment status based on Stripe status
@@ -432,7 +413,9 @@ exports.createOrder = async (req, res) => {
           }
 
           await savedOrder.save();
-        } else if (paymentType === "recurring") {
+        }
+        // Handle different payment types
+        else if (paymentType === "recurring") {
           // IMPROVED PAYMENT METHOD HANDLING
           let customer;
 

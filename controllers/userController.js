@@ -162,6 +162,7 @@ exports.loginAdmin = async (req, res) => {
       _id: user._id,
       name: user.name,
       email: user.email,
+      role: user.role,
       token: generateToken(user._id),
     });
   } catch (error) {
@@ -198,11 +199,29 @@ exports.forgotPassword = async (req, res) => {
 
     // Email content
     const emailBody = `
-      You are receiving this email because you (or someone else) requested a password reset for your account.\n\n
-      Please click on the following link to reset your password:\n\n
-      ${resetUrl}\n\n
-      This link will expire in 1 hour.\n\n
-      If you did not request this, please ignore this email and your password will remain unchanged.
+     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
+  
+  <h2 style="color: #4CAF50; text-align: center;">Password Reset Request</h2>
+  
+  <p>Dear Valued Member,</p>
+  
+  <p>We received a request to reset your password for your Shahid Afridi Foundation account. To complete the process and set a new password, please click the button below:</p>
+  
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="${resetUrl}" style="background-color: #4CAF50; color: white; padding: 12px 25px; text-decoration: none; border-radius: 4px; font-weight: bold;">Reset Your Password</a>
+  </div>
+  
+  <p>This link will expire in 1 hour for security reasons.</p>
+  
+  <p>If you didn't request this password reset, please ignore this email or contact our support team if you have concerns about your account security.</p>
+  
+  <p>Warm regards,<br>The Shahid Afridi Foundation Team</p>
+  
+  <div style="font-size: 12px; color: #666; border-top: 1px solid #e0e0e0; margin-top: 20px; padding-top: 20px;">
+    <p>This is an automated email. Please do not reply to this message.</p>
+    <p>If you're having trouble with the button above, copy and paste this link into your browser: ${resetUrl}</p>
+  </div>
+</div>
     `;
 
     await sendEmail(user.email, emailBody, "Password Reset Request");

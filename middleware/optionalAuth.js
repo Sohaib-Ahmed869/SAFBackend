@@ -9,13 +9,13 @@ const User = require("../models/user");
 const optionalAuth = async (req, res, next) => {
   try {
     const authHeader = req.header("Authorization");
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
       // No token or invalid format - continue as anonymous user
       req.user = null;
       return next();
     }
-    
+
     const token = authHeader.replace("Bearer ", "");
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
@@ -26,7 +26,7 @@ const optionalAuth = async (req, res, next) => {
     } else {
       req.user = null;
     }
-    
+
     next();
   } catch (error) {
     // If there's an error with the token, just continue as anonymous
