@@ -28,7 +28,7 @@ setupInstallmentProcessingJob();
 // Middleware
 app.use(
   cors({
-    origin: "http://shahidafridifoundation.s3-website-ap-southeast-2.amazonaws.com"
+    origin: "https://saf.calcite.live"
   })
 );
 app.use(express.json());
