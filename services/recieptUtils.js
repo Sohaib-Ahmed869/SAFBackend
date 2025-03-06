@@ -98,32 +98,34 @@ const generateReceiptPDF = async (
 
       // Add donation table
       doc.moveDown(2);
-      createTable(
-        doc,
-        [
-          {
-            donation_date: "Donation Date",
-            description: "Description",
-            amount: "Donation Amount (AUD)",
-          },
-        ],
-        50,
-        doc.y
-      );
+
+      // Table header definition
+      const headerData = {
+        donation_date: "Donation Date",
+        description: "Description",
+        amount: "Donation Amount",
+      };
 
       // Create table data based on payment type and options
       const tableData = getTableData(order, installmentNumber, paidOnly);
 
-      // Add each row to the table
-      let totalAmount = 0;
+      // Draw table with separate header handling for better control
+      let lastY = createTableWithSeparateHeader(
+        doc,
+        headerData,
+        tableData,
+        50,
+        doc.y
+      );
 
+      // Calculate total amount
+      let totalAmount = 0;
       tableData.forEach((row) => {
-        createTable(doc, [row], 50, doc.y);
         totalAmount += parseFloat(row.amount.replace("$", ""));
       });
 
       // Add total amount
-      doc.moveDown(1);
+      doc.y = lastY + 10;
       doc.fontSize(12).text(`Total Amount: $${totalAmount.toFixed(2)}`, {
         align: "right",
       });
@@ -309,41 +311,263 @@ const getInstallmentStatus = (order, installmentNumber) => {
 };
 
 /**
- * Creates a table row in the PDF
+ * Creates a table in the PDF with better row handling
  * @param {PDFDocument} doc - The PDF document
  * @param {Array} data - Array of objects containing row data
  * @param {number} x - X position
  * @param {number} y - Y position
+ * @returns {number} - The new Y position after drawing the table
  */
 const createTable = (doc, data, x, y) => {
   // Set column widths
   const dateColWidth = 100;
   const descColWidth = 280;
   const amountColWidth = 100;
+  const totalWidth = dateColWidth + descColWidth + amountColWidth;
 
-  // Set row height
-  const rowHeight = 20;
+  // Initial y position
+  let currentY = y;
 
-  data.forEach((row) => {
+  // Detect if this contains header row
+  const hasHeader =
+    data.length > 0 && data[0].donation_date === "Donation Date";
+
+  // Draw header row (if present)
+  if (hasHeader) {
+    // Fixed header height
+    const headerHeight = 25;
+
+    // Draw header background
     doc
-      .fontSize(9)
-      .text(row.donation_date, x, y, { width: dateColWidth })
-      .text(row.description, x + dateColWidth, y, { width: descColWidth })
-      .text(row.amount, x + dateColWidth + descColWidth, y, {
-        width: amountColWidth,
-        align: "right",
-      });
+      .fillColor("#f5f5f5")
+      .rect(x, currentY, totalWidth, headerHeight)
+      .fill()
+      .fillColor("black");
 
-    // Draw horizontal line after each row
+    // Draw header text with consistent positioning
+    doc.font("Helvetica-Bold").fontSize(9);
+
+    // Center text vertically in header cells
+    const textY = currentY + headerHeight / 2 - 4;
+
+    // Date column
+    doc.text(data[0].donation_date, x + 5, textY, {
+      width: dateColWidth - 10,
+      align: "left",
+    });
+
+    // Description column
+    doc.text(data[0].description, x + dateColWidth + 5, textY, {
+      width: descColWidth - 10,
+      align: "left",
+    });
+
+    // Amount column
+    doc.text(data[0].amount, x + dateColWidth + descColWidth + 5, textY, {
+      width: amountColWidth - 10,
+      align: "right",
+    });
+
+    // Reset font
+    doc.font("Helvetica");
+
+    // Draw border around header
+    doc.lineWidth(0.5).rect(x, currentY, totalWidth, headerHeight).stroke();
+
+    // Draw vertical lines for columns
     doc
-      .moveTo(x, y + rowHeight)
-      .lineTo(x + dateColWidth + descColWidth + amountColWidth, y + rowHeight)
+      .moveTo(x + dateColWidth, currentY)
+      .lineTo(x + dateColWidth, currentY + headerHeight)
       .stroke();
 
-    y += rowHeight;
+    doc
+      .moveTo(x + dateColWidth + descColWidth, currentY)
+      .lineTo(x + dateColWidth + descColWidth, currentY + headerHeight)
+      .stroke();
+
+    // Move position down
+    currentY += headerHeight;
+
+    // If only header row, return current position
+    if (data.length === 1) {
+      return currentY;
+    }
+
+    // Remove header from data for processing rows
+    data = data.slice(1);
+  }
+
+  // Process data rows
+  for (const row of data) {
+    // Calculate height needed for description
+    const descriptionHeight = doc.fontSize(9).heightOfString(row.description, {
+      width: descColWidth - 10,
+    });
+
+    // Ensure minimum row height (25 pixels) or more if needed
+    const rowHeight = Math.max(25, descriptionHeight + 10);
+
+    // Draw cell content with consistent positioning
+    doc.fontSize(9);
+
+    // Date column (vertically aligned to top with padding)
+    doc.text(row.donation_date, x + 5, currentY + 5, {
+      width: dateColWidth - 10,
+    });
+
+    // Description column
+    doc.text(row.description, x + dateColWidth + 5, currentY + 5, {
+      width: descColWidth - 10,
+    });
+
+    // Amount column
+    doc.text(row.amount, x + dateColWidth + descColWidth + 5, currentY + 5, {
+      width: amountColWidth - 10,
+      align: "right",
+    });
+
+    // Draw full cell borders
+    doc.lineWidth(0.5).rect(x, currentY, totalWidth, rowHeight).stroke();
+
+    // Draw vertical dividers
+    doc
+      .moveTo(x + dateColWidth, currentY)
+      .lineTo(x + dateColWidth, currentY + rowHeight)
+      .stroke();
+
+    doc
+      .moveTo(x + dateColWidth + descColWidth, currentY)
+      .lineTo(x + dateColWidth + descColWidth, currentY + rowHeight)
+      .stroke();
+
+    // Update position for next row
+    currentY += rowHeight;
+  }
+
+  return currentY;
+};
+
+/**
+ * Creates separate header and data sections for better control
+ * @param {PDFDocument} doc - The PDF document
+ * @param {Object} headerData - Header row data
+ * @param {Array} bodyData - Data rows
+ * @param {number} x - X position
+ * @param {number} y - Y position
+ * @returns {number} - The new Y position after drawing the table
+ */
+const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
+  // Set column widths
+  const dateColWidth = 100;
+  const descColWidth = 280;
+  const amountColWidth = 100;
+  const totalWidth = dateColWidth + descColWidth + amountColWidth;
+
+  // Initial y position
+  let currentY = y;
+
+  // Fixed header height
+  const headerHeight = 25;
+
+  // Draw header background
+  doc
+    .fillColor("#f5f5f5")
+    .rect(x, currentY, totalWidth, headerHeight)
+    .fill()
+    .fillColor("black");
+
+  // Draw header text with consistent positioning
+  doc.font("Helvetica-Bold").fontSize(9);
+
+  // Center text vertically in header cells
+  const textY = currentY + headerHeight / 2 - 4;
+
+  // Date column
+  doc.text(headerData.donation_date, x + 5, textY, {
+    width: dateColWidth - 10,
+    align: "left",
   });
 
-  return y;
+  // Description column
+  doc.text(headerData.description, x + dateColWidth + 5, textY, {
+    width: descColWidth - 10,
+    align: "left",
+  });
+
+  // Amount column
+  doc.text(headerData.amount, x + dateColWidth + descColWidth + 5, textY, {
+    width: amountColWidth - 10,
+    align: "right",
+  });
+
+  // Reset font
+  doc.font("Helvetica");
+
+  // Draw border around header
+  doc.lineWidth(0.5).rect(x, currentY, totalWidth, headerHeight).stroke();
+
+  // Draw vertical lines for columns
+  doc
+    .moveTo(x + dateColWidth, currentY)
+    .lineTo(x + dateColWidth, currentY + headerHeight)
+    .stroke();
+
+  doc
+    .moveTo(x + dateColWidth + descColWidth, currentY)
+    .lineTo(x + dateColWidth + descColWidth, currentY + headerHeight)
+    .stroke();
+
+  // Move position down after header
+  currentY += headerHeight;
+
+  // Process data rows
+  for (const row of bodyData) {
+    // Calculate height needed for description
+    const descriptionHeight = doc.fontSize(9).heightOfString(row.description, {
+      width: descColWidth - 10,
+    });
+
+    // Ensure minimum row height (25 pixels) or more if needed
+    const rowHeight = Math.max(25, descriptionHeight + 10);
+
+    // Draw cell content with consistent positioning
+    doc.fontSize(9);
+
+    // Date column (vertically aligned to top with padding)
+    doc.text(row.donation_date, x + 5, currentY + 5, {
+      width: dateColWidth - 10,
+    });
+
+    // Description column
+    doc.text(row.description, x + dateColWidth + 5, currentY + 5, {
+      width: descColWidth - 10,
+    });
+
+    // Amount column
+    doc.text(row.amount, x + dateColWidth + descColWidth + 5, currentY + 5, {
+      width: amountColWidth - 10,
+      align: "right",
+    });
+
+    // Draw full cell borders
+    doc.lineWidth(0.5).rect(x, currentY, totalWidth, rowHeight).stroke();
+
+    // Draw vertical dividers
+    doc
+      .moveTo(x + dateColWidth, currentY)
+      .lineTo(x + dateColWidth, currentY + rowHeight)
+      .stroke();
+
+    doc
+      .moveTo(x + dateColWidth + descColWidth, currentY)
+      .lineTo(x + dateColWidth + descColWidth, currentY + rowHeight)
+      .stroke();
+
+    // Update position for next row
+    currentY += rowHeight;
+  }
+
+  return currentY;
 };
 
 /**

@@ -770,6 +770,21 @@ exports.createOrder = async (req, res) => {
       }
     }
 
+    if (paymentMethod === "bank") {
+      try {
+        await sendReceiptEmail(savedOrder);
+        console.log(
+          `Bank transfer receipt sent for order: ${savedOrder.donationId}`
+        );
+      } catch (emailError) {
+        console.error(
+          "Failed to send bank transfer receipt email:",
+          emailError
+        );
+        // Don't fail the order if email fails
+      }
+    }
+
     // Send response
     res.status(201).json({
       status: "Success",

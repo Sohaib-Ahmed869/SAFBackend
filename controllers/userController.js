@@ -15,7 +15,7 @@ const generateToken = (id) => {
 
 exports.register = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, country, phone } = req.body;
     console.log(req.body);
     const existingUser = await User.findOne({
       email,
@@ -32,6 +32,8 @@ exports.register = async (req, res) => {
       name,
       email,
       password: hashedPassword,
+      country,
+      phone,
     });
 
     await user.save();
