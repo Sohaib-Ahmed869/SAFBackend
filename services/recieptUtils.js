@@ -192,7 +192,7 @@ const generateReceiptPDF = async (
       // Add footer
       doc.moveDown(3);
       const footerText =
-        "www.donateSAF.com.au | syed.atif@shahidafridifoundation.org | +61 413 911 091";
+        "www.donateSAF.com.au | syed.atif@sa.foundation | +61 413 911 091";
       doc.fontSize(9).text(footerText, 50, 700, { align: "center" });
 
       // Finalize the PDF and end the stream
@@ -799,14 +799,14 @@ const createEmailBody = (order, totalAmount, installmentNumber) => {
         order.paymentMethod === "bank" ? getBankTransferInstructions(order) : ""
       }
       
-      <p>If you have any questions or need further assistance, please don't hesitate to contact us at <a href="mailto:syed.atif@shahidafridifoundation.org">syed.atif@shahidafridifoundation.org</a> or call us at +61 413 911 091.</p>
+      <p>If you have any questions or need further assistance, please don't hesitate to contact us at <a href="mailto:syed.atif@sa.foundation">syed.atif@sa.foundation</a> or call us at +61 413 911 091.</p>
       
       <p>Warm regards,<br>
       Shahid Afridi Foundation Team</p>
       
       <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #777;">
         <p>Shahid Afridi Foundation Ltd | ABN: 97 642 657 010<br>
-        <a href="https://www.donateSAF.com.au">www.donateSAF.com.au</a> | <a href="mailto:syed.atif@shahidafridifoundation.org">syed.atif@shahidafridifoundation.org</a> | +61 413 911 091</p>
+        <a href="https://www.donateSAF.com.au">www.donateSAF.com.au</a> | <a href="mailto:syed.atif@sa.foundation">syed.atif@sa.foundation</a> | +61 413 911 091</p>
       </div>
     </div>
   `;

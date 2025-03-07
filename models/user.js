@@ -37,6 +37,12 @@ const userSchema = new mongoose.Schema(
     language: String,
     currency: String,
     profileImage: String,
+    address: {
+      street: String,
+      city: String,
+      state: String,
+      postalCode: String,
+    },
 
     notifications: {
       emailNotifications: { type: Boolean, default: true },

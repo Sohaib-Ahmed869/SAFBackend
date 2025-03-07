@@ -51,6 +51,7 @@ exports.register = async (req, res) => {
         lastName: user.lastName,
         email: user.email,
         phone: user.phone,
+        address: user.address,
       },
       token,
     });
@@ -86,6 +87,7 @@ exports.login = async (req, res) => {
       lastName: user.lastName,
       email: user.email,
       phone: user.phone,
+      address: user.address,
       token: generateToken(user._id),
     });
   } catch (error) {
@@ -197,7 +199,7 @@ exports.forgotPassword = async (req, res) => {
     await user.save();
 
     // Create reset URL
-    const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+    const resetUrl = `https://saf.calcite.live/reset-password/${resetToken}`;
 
     // Email content
     const emailBody = `

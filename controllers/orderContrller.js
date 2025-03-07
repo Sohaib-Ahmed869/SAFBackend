@@ -160,6 +160,7 @@ exports.createOrder = async (req, res) => {
       recurringDetails,
       installmentDetails,
       stripePaymentMethodId,
+      updateUserDetails,
     } = req.body;
 
     console.log("Received order data:", req.body);
@@ -174,6 +175,31 @@ exports.createOrder = async (req, res) => {
 
     // Get user from request
     const user = req.user;
+
+    // Update user details if needed
+    if (user && (updateUserDetails || donorDetails.rememberDetails)) {
+      try {
+        // Update user with donor details
+        const userUpdates = {
+          name: donorDetails.name,
+          phone: donorDetails.phone,
+          // Don't update email if user already has one
+          // email: donorDetails.email,
+          address: {
+            street: donorDetails.streetAddress,
+            city: donorDetails.townCity,
+            state: donorDetails.state,
+            postalCode: donorDetails.postcode,
+          },
+        };
+
+        await User.findByIdAndUpdate(user._id, userUpdates);
+        console.log(`Updated user details for user ${user._id}`);
+      } catch (userUpdateError) {
+        console.error("Error updating user details:", userUpdateError);
+        // Don't fail the order if user update fails
+      }
+    }
 
     // Generate unique donation ID with user info
     const donationId = await generateUniqueDonationId(async (id) => {
