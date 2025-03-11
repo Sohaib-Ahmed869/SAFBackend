@@ -15,7 +15,7 @@ const generateToken = (id) => {
 
 exports.register = async (req, res) => {
   try {
-    const { name, email, password, country, phone } = req.body;
+    const {firstName,lastName, email, password, country, phone } = req.body;
     console.log(req.body);
     const existingUser = await User.findOne({
       email,
@@ -29,7 +29,9 @@ exports.register = async (req, res) => {
 
     // Create new user
     const user = new User({
-      name,
+      firstName,
+      lastName,
+      name: `${firstName} ${lastName}`, 
       email,
       password: hashedPassword,
       country,
@@ -38,6 +40,7 @@ exports.register = async (req, res) => {
 
     await user.save();
 
+    console.log("User SignUp",user)
     // Generate token
     const token = generateToken(user._id);
     // Send response
@@ -46,6 +49,8 @@ exports.register = async (req, res) => {
       message: "Registration successful",
       user: {
         _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
         name: user.name,
         firstName: user.firstName,
         lastName: user.lastName,
@@ -55,6 +60,7 @@ exports.register = async (req, res) => {
       },
       token,
     });
+
   } catch (error) {
     console.error("Registration error:", error);
     res.status(500).json({
@@ -299,7 +305,9 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
+
 exports.googleAuth = async (req, res) => {
+
   try {
     const token = req.body.credential;
     console.log("Received token:", token);
@@ -318,23 +326,33 @@ exports.googleAuth = async (req, res) => {
     const payload = ticket.getPayload();
     const googleId = payload.sub;
     const email = payload.email;
-    const name = payload.name;
-    const picture = payload.picture;
+    const fullName = payload.name;
+    let firstName = "";
+    let lastName = "";
+    if (fullName) {
+      const names = fullName.split(" ");
+      firstName = names[0];
+      lastName = names.slice(1).join(" ");
+    }
 
     let user = await User.findOne({ email });
     if (!user) {
       user = new User({
-        name,
+        firstName,
+        lastName,
+        name: fullName,
         email,
         authProvider: "google",
         googleId,
-        profileImage: picture,
+        profileImage: payload.picture,
       });
       await user.save();
     } else {
       if (!user.googleId) {
         user.googleId = googleId;
         user.authProvider = "google";
+        if (!user.firstName) user.firstName = firstName;
+        if (!user.lastName) user.lastName = lastName;
         await user.save();
       }
     }
@@ -345,7 +363,8 @@ exports.googleAuth = async (req, res) => {
       message: "Google Authentication successful",
       user: {
         _id: user._id,
-        name: user.name,
+        firstName: user.firstName,
+        lastName: user.lastName,
         email: user.email,
         role: user.role,
       },
@@ -360,3 +379,114 @@ exports.googleAuth = async (req, res) => {
     });
   }
 };
+
+
+exports.getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        status: "Error",
+        message: "User not found",
+      });
+    }
+    res.status(200).json({
+      status: "Success",
+      user: {
+        _id: user._id,
+        // Combine firstName and lastName into a single name field
+        name: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        phone: user.phone,
+        address: user.address,
+        country: user.country,
+        // Include any additional fields you might need on the frontend
+        agreeToMessages: user.agreeToMessages,
+      },
+    });
+  } catch (error) {
+    console.error("getMe error:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Could not get user data",
+      error: error.message,
+    });
+  }
+};
+
+
+exports.updateUser = async (req, res) => {
+  try {
+    // Destructure fields from the request body.
+    const { firstName, lastName, email, phone, country, address, agreeToMessages } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Email is required to update user details",
+      });
+    }
+
+    // Find the user using the provided email.
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({
+        status: "Error",
+        message: "User not found",
+      });
+    }
+
+    // Update basic fields if provided.
+    if (firstName) user.firstName = firstName;
+    if (lastName) user.lastName = lastName;
+    if (firstName || lastName) {
+      // Update the concatenated name field.
+      user.name = `${firstName || user.firstName} ${lastName || user.lastName}`;
+    }
+    if (phone) user.phone = phone;
+    if (country) user.country = country;
+    if (typeof agreeToMessages !== 'undefined') user.agreeToMessages = agreeToMessages;
+
+    // Update the address using the nested object (if provided)
+    if (address) {
+      if (!user.address) {
+        user.address = {};
+      }
+      if (address.street) user.address.street = address.street;
+      if (address.city) user.address.city = address.city;
+      if (address.state) user.address.state = address.state;
+      // Accept either "postalCode" or "postcode" from the frontend and update user.address.postalCode
+      if (address.postalCode || address.postcode) {
+        user.address.postalCode = address.postalCode || address.postcode;
+      }
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      status: "Success",
+      message: "User updated successfully",
+      user: {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        phone: user.phone,
+        address: user.address,
+        country: user.country,
+        agreeToMessages: user.agreeToMessages,
+      },
+    });
+  } catch (error) {
+    console.error("Update user error:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Could not update user data",
+      error: error.message,
+    });
+  }
+};
+
+

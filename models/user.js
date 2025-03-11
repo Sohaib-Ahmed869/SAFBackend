@@ -32,7 +32,10 @@ const userSchema = new mongoose.Schema(
     },
     firstName: String,
     lastName: String,
-    phone: String,
+    phone: {
+      type: String,
+      default: "+61", 
+    },    
     country: String,
     language: String,
     currency: String,
