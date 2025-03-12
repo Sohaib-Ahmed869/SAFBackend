@@ -21,11 +21,11 @@ const contactRequestSchema = new mongoose.Schema(
     },
     hostCity: {
       type: String,
-      required: true,
+      
     },
     wouldLikeToHostShahidAfridi: {
       type: Boolean,
-      default: false,
+ 
     },
     description: {
       type: String,
@@ -33,11 +33,11 @@ const contactRequestSchema = new mongoose.Schema(
     },
     numberOfGuests: {
       type: Number,
-      required: true,
+   
     },
     minimumDonation: {
       type: Number,
-      required: true,
+  
     },
     status: {
       type: String,
