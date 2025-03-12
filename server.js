@@ -28,8 +28,8 @@ setupInstallmentProcessingJob();
 // Middleware
 app.use(
   cors({
-    // origin: "https://saf.calcite.live"
-    origin:"*"
+    origin: "https://saf.calcite.live"
+    //origin:"*"
   })
 );
 app.use(express.json());
