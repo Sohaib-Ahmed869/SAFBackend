@@ -43,7 +43,7 @@ const createUserForDonor = async (donorDetails, donationId) => {
 
     // Send welcome email with credentials
     const loginUrl =
-      "http://safbucket100.s3-website-ap-southeast-2.amazonaws.com/login";
+      "https://shahidafridifoundation.org.au/login";
 
     const emailSubject =
       "Welcome to Shahid Afridi Foundation - Your Account Details";
