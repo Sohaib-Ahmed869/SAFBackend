@@ -3,10 +3,15 @@ const nodemailer = require("nodemailer");
 
 // Configure the transporter for nodemailer
 const transporter = nodemailer.createTransport({
-  service: "gmail", // Use your email service provider (e.g., Gmail, Outlook, etc.)
+  host: "smtp-mail.outlook.com",
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER, // Your email address (store in environment variable for security)
     pass: process.env.EMAIL_PASS, // Your email password (store in environment variable)
+  },
+  tls: {
+    ciphers: "SSLv3",
   },
 });
 
