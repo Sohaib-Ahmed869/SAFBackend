@@ -192,7 +192,7 @@ const generateReceiptPDF = async (
       // Add footer
       doc.moveDown(3);
       const footerText =
-        "www.donateSAF.com.au | syed.atif@sa.foundation | +61 413 911 091";
+        "www.shahidafridifoundation.org.au | syed.atif@sa.foundation | +61 413 911 091";
       doc.fontSize(9).text(footerText, 50, 700, { align: "center" });
 
       // Finalize the PDF and end the stream
