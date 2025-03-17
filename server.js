@@ -28,7 +28,10 @@ setupInstallmentProcessingJob();
 // Middleware
 app.use(
   cors({
-    origin: "https://shahidafridifoundation.org.au",
+    origin: [
+      "https://shahidafridifoundation.org.au",
+      "https://www.shahidafridifoundation.org.au",
+    ],
   })
 );
 app.use(express.json());
