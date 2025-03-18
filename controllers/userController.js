@@ -182,6 +182,7 @@ exports.loginAdmin = async (req, res) => {
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
+    console.log(email);
     const user = await User.findOne({ email });
 
     if (!user) {
@@ -204,7 +205,7 @@ exports.forgotPassword = async (req, res) => {
     await user.save();
 
     // Create reset URL
-    const resetUrl = `https://saf.calcite.live/reset-password/${resetToken}`;
+    const resetUrl = `https://shahidafridifoundation.org.au/reset-password/${resetToken}`;
 
     // Email content
     const emailBody = `
