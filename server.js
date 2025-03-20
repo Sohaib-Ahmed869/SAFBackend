@@ -26,7 +26,7 @@ const app = express();
 connectDB();
 setupInstallmentProcessingJob();
 // Middleware
-//app.use(cors({ origin: '*' }));
+// app.use(cors({ origin: '*' }));
 
  app.use(cors({
   origin: [
