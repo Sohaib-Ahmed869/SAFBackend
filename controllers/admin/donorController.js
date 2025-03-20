@@ -6,10 +6,82 @@ const Order = require("../../models/order");
 const User = require("../../models/user");
 
 // Get Dashboard Stats
+// router.get("/dashboard/stats", isAdmin, async (req, res) => {
+//   try {
+//     // First, group orders by donor (user) for orders with completed/active paymentStatus
+//     const donorsAggregation = await Order.aggregate([
+//       {
+//         $match: {
+//           paymentStatus: { $in: ["completed", "active"] },
+//         },
+//       },
+//       {
+//         $group: {
+//           _id: "$user",
+//           donorTotal: { $sum: "$totalAmount" },
+//           orderCount: { $sum: 1 },
+//         },
+//       },
+//     ]);
+    
+//     // Compute overall totals based on distinct donors
+//     const totalDonors = donorsAggregation.length;
+//     const totalAmount = donorsAggregation.reduce(
+//       (sum, doc) => sum + doc.donorTotal,
+//       0
+//     );
+//     const averageDonation = totalDonors > 0 ? totalAmount / totalDonors : 0;
+    
+//     // Get recurring donors count (distinct donors with recurring orders)
+//     const recurringDonorsAgg = await Order.aggregate([
+//       {
+//         $match: {
+//           paymentType: "recurring",
+//           paymentStatus: { $in: ["completed", "active"] },
+//         },
+//       },
+//       {
+//         $group: {
+//           _id: "$user",
+//         },
+//       },
+//       { $count: "count" },
+//     ]);
+//     const recurringCount = recurringDonorsAgg[0]?.count || 0;
+    
+//     // Calculate success rate based on all orders (if needed)
+//     const allDonations = await Order.countDocuments();
+//     const successfulDonations = await Order.countDocuments({
+//       paymentStatus: { $in: ["completed", "active"] },
+//     });
+//     const successRate = allDonations ? (successfulDonations / allDonations) * 100 : 0;
+    
+//     const stats = {
+//       totalAmount,
+//       totalDonors,
+//       averageDonation,
+//       recurringDonations: recurringCount,
+//       successRate,
+//     };
+    
+//     console.log("Aggregated donors:", donorsAggregation);
+//     console.log("Computed stats:", stats);
+    
+//     res.json({ status: "Success", data: { stats, donorsAggregation } });
+//   } catch (error) {
+//     res.status(500).json({
+//       status: "Error",
+//       message: "Failed to fetch dashboard statistics",
+//       error: error.message,
+//     });
+//   }
+// });
+
+
 router.get("/dashboard/stats", isAdmin, async (req, res) => {
   try {
-    // Get total donations and amount
-    const totalStats = await Order.aggregate([
+    // Group orders by donor for orders with completed/active paymentStatus
+    const donorsAggregation = await Order.aggregate([
       {
         $match: {
           paymentStatus: { $in: ["completed", "active"] },
@@ -17,15 +89,23 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
       },
       {
         $group: {
-          _id: null,
-          totalAmount: { $sum: "$totalAmount" },
-          totalDonations: { $sum: 1 },
+          _id: "$user",
+          donorTotal: { $sum: "$totalAmount" },
+          orderCount: { $sum: 1 },
         },
       },
     ]);
 
-    // Get recurring donors count
-    const recurringDonors = await Order.aggregate([
+    // Compute overall totals based on distinct donors
+    const totalDonors = donorsAggregation.length; // number of unique donors
+    const totalAmount = donorsAggregation.reduce(
+      (sum, doc) => sum + doc.donorTotal,
+      0
+    );
+    const averageDonation = totalDonors > 0 ? totalAmount / totalDonors : 0;
+
+    // Get recurring donors count (distinct donors with recurring orders)
+    const recurringDonorsAgg = await Order.aggregate([
       {
         $match: {
           paymentType: "recurring",
@@ -37,27 +117,29 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
           _id: "$user",
         },
       },
-      {
-        $count: "count",
-      },
+      { $count: "count" },
     ]);
+    const recurringCount = recurringDonorsAgg[0]?.count || 0;
 
     // Calculate success rate
     const allDonations = await Order.countDocuments();
     const successfulDonations = await Order.countDocuments({
       paymentStatus: { $in: ["completed", "active"] },
     });
+    const successRate = allDonations ? (successfulDonations / allDonations) * 100 : 0;
 
     const stats = {
-      totalAmount: totalStats[0]?.totalAmount || 0,
-      averageDonation: totalStats[0]
-        ? totalStats[0].totalAmount / totalStats[0].totalDonations
-        : 0,
-      recurringDonations: recurringDonors[0]?.count || 0,
-      successRate: (successfulDonations / allDonations) * 100,
+      totalAmount,
+      totalDonors,
+      averageDonation, // computed as totalAmount / totalDonors
+      recurringDonations: recurringCount,
+      successRate,
     };
 
-    res.json({ status: "Success", data: { stats } });
+    console.log("Aggregated donors:", donorsAggregation);
+    console.log("Computed stats:", stats);
+
+    res.json({ status: "Success", data: { stats, donorsAggregation } });
   } catch (error) {
     res.status(500).json({
       status: "Error",
@@ -66,7 +148,6 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
     });
   }
 });
-
 // Get Donors List
 router.get("/", isAdmin, async (req, res) => {
   try {
@@ -78,7 +159,7 @@ router.get("/", isAdmin, async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    // Build search condition
+    // Build search condition for donor name/email
     const searchCondition = search
       ? {
           $or: [
@@ -88,12 +169,10 @@ router.get("/", isAdmin, async (req, res) => {
         }
       : {};
 
-    // Aggregate pipeline to get donor information
+    // Aggregation pipeline to get donor info
     const aggregatePipeline = [
-      // First filter out cancelled orders
       {
         $match: {
-          // Only include non-cancelled orders, so remove cancelled orders and failed payments and only include completed and active payments
           status: { $ne: "cancelled" },
           paymentStatus: { $in: ["completed", "active"] },
         },
@@ -117,9 +196,7 @@ router.get("/", isAdmin, async (req, res) => {
           donationCount: { $sum: 1 },
           lastDonationDate: { $max: "$createdAt" },
           firstDonationDate: { $min: "$createdAt" },
-          donationType: {
-            $push: "$paymentType",
-          },
+          donationType: { $push: "$paymentType" },
         },
       },
       {
@@ -142,12 +219,12 @@ router.get("/", isAdmin, async (req, res) => {
 
     const donors = await Order.aggregate(aggregatePipeline);
 
-    // Get total count for pagination (also filtered by non-cancelled orders)
-    const totalCount = await Order.aggregate([
-      // Add the same filter here too
+    // Total count pipeline using the same conditions
+    const totalCountPipeline = [
       {
         $match: {
-          status: { $ne: "cancelled" }, // Only include non-cancelled orders
+          status: { $ne: "cancelled" },
+          paymentStatus: { $in: ["completed", "active"] },
         },
       },
       {
@@ -166,9 +243,10 @@ router.get("/", isAdmin, async (req, res) => {
       },
       { $match: searchCondition },
       { $count: "total" },
-    ]);
+    ];
 
-    const total = totalCount[0]?.total || 0;
+    const totalCountResult = await Order.aggregate(totalCountPipeline);
+    const total = totalCountResult[0]?.total || 0;
 
     res.json({
       status: "Success",
@@ -195,8 +273,6 @@ router.get("/", isAdmin, async (req, res) => {
 router.get("/:id", isAdmin, async (req, res) => {
   try {
     const donorId = req.params.id;
-
-    // Get donor basic information
     const donor = await User.findById(donorId);
     if (!donor) {
       return res.status(404).json({
@@ -205,7 +281,6 @@ router.get("/:id", isAdmin, async (req, res) => {
       });
     }
 
-    // Get donation history
     const donationHistory = await Order.find(
       { user: donorId },
       {
@@ -217,7 +292,6 @@ router.get("/:id", isAdmin, async (req, res) => {
       }
     ).sort({ createdAt: -1 });
 
-    // Process donation history
     const processedHistory = donationHistory.map((donation) => ({
       id: donation._id,
       date: donation.createdAt,

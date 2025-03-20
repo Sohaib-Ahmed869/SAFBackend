@@ -30,6 +30,10 @@ const OrderSchema = new Schema(
       enum: ["single", "recurring", "installments"],
       required: true,
     },
+    donationType:{
+      type:String,
+      require:true,
+    },
     adminCostContribution: {
       included: {
         type: Boolean,
@@ -54,9 +58,10 @@ const OrderSchema = new Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ["card", "bank", "card1", "card2", "card3", "card4"],
+      enum: ["visa", "mastercard", "bank"],
       required: true,
-    },
+    }    
+    ,
     paymentStatus: {
       type: String,
       enum: [
@@ -77,62 +82,167 @@ const OrderSchema = new Schema(
       required: true,
     },
     // Recurring payment details
+    // recurringDetails: {
+    //   frequency: {
+    //     type: String,
+    //     enum: ["daily", "weekly", "monthly", "yearly"],
+    //     required: true,
+    //   },
+    //   amount: {
+    //     type: Number,
+    //     required: true,
+    //   },
+    //   startDate: {
+    //     type: Date,
+    //     default: Date.now,
+    //   },
+    //   endDate: {
+    //     type: Date,
+    //     validate: {
+    //       validator: function (value) {
+    //         if (!value) return true;
+    //         return value > this.startDate;
+    //       },
+    //       message: "End date must be after the start date",
+    //     },
+    //   },
+    //   status: {
+    //     type: String,
+    //     enum: ["active", "paused", "cancelled"],
+    //     default: "active",
+    //   },
+    //   nextPaymentDate: {
+    //     type: Date,
+    //   },
+    //   totalPayments: {
+    //     type: Number,
+    //     default: 0,
+    //   },
+    //   paymentHistory: [
+    //     {
+    //       date: Date,
+    //       amount: Number,
+    //       invoiceId: String,
+    //       status: {
+    //         type: String,
+    //         enum: ["succeeded", "failed", "pending"],
+    //       },
+    //       failureReason: String,
+    //     },
+    //   ],
+    // },
+    
+    // // Installment payment details
+    // installmentDetails: {
+    //   numberOfInstallments: Number,
+    //   installmentAmount: Number,
+    //   startDate: Date,
+    //   status: {
+    //     type: String,
+    //     enum: ["active", "paused", "cancelled", "completed"],
+    //     default: "active",
+    //   },
+    //   installmentsPaid: {
+    //     type: Number,
+    //     default: 0,
+    //   },
+    //   nextInstallmentDate: Date,
+    //   installmentHistory: [
+    //     {
+    //       installmentNumber: Number,
+    //       date: Date,
+    //       amount: Number,
+    //       status: String,
+    //       transactionId: String,
+    //       failureReason: String,
+    //     },
+    //   ],
+    // },
+
     recurringDetails: {
-      frequency: {
-        type: String,
-        enum: ["daily", "weekly", "monthly", "yearly"],
-      },
-      amount: Number,
-      startDate: Date,
-      endDate: Date, // Optional end date
-      status: {
-        type: String,
-        enum: ["active", "paused", "cancelled"],
-        default: "active",
-      },
-      nextPaymentDate: Date,
-      totalPayments: {
-        type: Number,
-        default: 0,
-      },
-      paymentHistory: [
+      type: new Schema(
         {
-          date: Date,
-          amount: Number,
-          invoiceId: String,
+          frequency: {
+            type: String,
+            enum: ["daily", "weekly", "monthly", "yearly"],
+            required: true,
+          },
+          amount: {
+            type: Number,
+            required: true,
+          },
+          startDate: {
+            type: Date,
+            default: Date.now,
+          },
+          endDate: {
+            type: Date,
+            validate: {
+              validator: function (value) {
+                if (!value) return true;
+                return value > this.startDate;
+              },
+              message: "End date must be after the start date",
+            },
+          },
           status: {
             type: String,
-            enum: ["succeeded", "failed", "pending"],
+            enum: ["active", "paused", "cancelled"],
+            default: "active",
           },
-          failureReason: String,
+          nextPaymentDate: Date,
+          totalPayments: {
+            type: Number,
+            default: 0,
+          },
+          paymentHistory: [
+            {
+              date: Date,
+              amount: Number,
+              invoiceId: String,
+              status: {
+                type: String,
+                enum: ["succeeded", "failed", "pending"],
+              },
+              failureReason: String,
+            },
+          ],
         },
-      ],
+        { _id: false }
+      ),
+      default: undefined, // Do not instantiate an empty object by default
     },
-    // Installment payment details
     installmentDetails: {
-      numberOfInstallments: Number,
-      installmentAmount: Number,
-      startDate: Date,
-      status: {
-        type: String,
-        enum: ["active", "paused", "cancelled", "completed"],
-        default: "active",
-      },
-      installmentsPaid: {
-        type: Number,
-        default: 0,
-      },
-      nextInstallmentDate: Date,
-      installmentHistory: [
+      type: new Schema(
         {
-          installmentNumber: Number,
-          date: Date,
-          amount: Number,
-          status: String,
-          transactionId: String,
-          failureReason: String,
+          numberOfInstallments: Number,
+          installmentAmount: Number,
+          startDate: Date,
+          status: {
+            type: String,
+            enum: ["active", "paused", "cancelled", "completed"],
+            default: "active",
+          },
+          installmentsPaid: {
+            type: Number,
+            default: 0,
+          },
+          nextInstallmentDate: Date,
+          installmentHistory: [
+            {
+              installmentNumber: Number,
+              date: Date,
+              amount: Number,
+              status: String,
+              transactionId: String,
+              failureReason: String,
+            },
+          ],
+          paymentIntervalDays: Number,
         },
-      ],
+        { _id: false }
+      ),
+      default: undefined,
     },
     // Transaction details
     transactionDetails: {

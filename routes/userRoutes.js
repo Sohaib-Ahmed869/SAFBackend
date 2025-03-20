@@ -14,4 +14,6 @@ router.post("/auth/google", userController.googleAuth);
 
 router.get("/me", auth, userController.getMe);
 router.put("/update", auth, userController.updateUser);
+router.put("/update-password", auth, userController.updatePassword);
+
 module.exports = router;
