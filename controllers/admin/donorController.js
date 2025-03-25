@@ -156,18 +156,25 @@ router.get("/", isAdmin, async (req, res) => {
     const search = req.query.search || "";
     const sortBy = req.query.sortBy || "totalDonated";
     const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
+    const type = req.query.type || "All"; // "All", "single", "recurring", or "installments"
 
     const skip = (page - 1) * limit;
 
-    // Build search condition for donor name/email
+    // Build search condition on grouped fields (name and email)
     const searchCondition = search
       ? {
           $or: [
-            { "donor.name": { $regex: search, $options: "i" } },
-            { "donor.email": { $regex: search, $options: "i" } },
+            { name: { $regex: search, $options: "i" } },
+            { email: { $regex: search, $options: "i" } },
           ],
         }
       : {};
+
+    // Prepare donation type filter (convert "single" to "one-time")
+    let typeFilter;
+    if (type && type !== "All") {
+      typeFilter = type === "single" ? "one-time" : type;
+    }
 
     // Aggregation pipeline to get donor info
     const aggregatePipeline = [
@@ -196,7 +203,7 @@ router.get("/", isAdmin, async (req, res) => {
           donationCount: { $sum: 1 },
           lastDonationDate: { $max: "$createdAt" },
           firstDonationDate: { $min: "$createdAt" },
-          donationType: { $push: "$paymentType" },
+          donationTypes: { $push: "$paymentType" },
         },
       },
       {
@@ -204,23 +211,36 @@ router.get("/", isAdmin, async (req, res) => {
           id: "$_id",
           donationType: {
             $cond: {
-              if: { $in: ["recurring", "$donationType"] },
+              if: { $in: ["recurring", "$donationTypes"] },
               then: "recurring",
               else: "one-time",
             },
           },
         },
       },
-      { $match: searchCondition },
+    ];
+
+    // If a donation type filter exists, add it
+    if (typeFilter) {
+      aggregatePipeline.push({ $match: { donationType: typeFilter } });
+    }
+
+    // Add the search condition if provided
+    if (Object.keys(searchCondition).length > 0) {
+      aggregatePipeline.push({ $match: searchCondition });
+    }
+
+    // Finally add sorting, pagination
+    aggregatePipeline.push(
       { $sort: { [sortBy]: sortOrder } },
       { $skip: skip },
-      { $limit: limit },
-    ];
+      { $limit: limit }
+    );
 
     const donors = await Order.aggregate(aggregatePipeline);
 
-    // Total count pipeline using the same conditions
-    const totalCountPipeline = [
+    // Build a similar pipeline for total count (exclude pagination stages)
+    const countPipeline = [
       {
         $match: {
           status: { $ne: "cancelled" },
@@ -239,13 +259,34 @@ router.get("/", isAdmin, async (req, res) => {
       {
         $group: {
           _id: "$user",
+          name: { $first: "$donor.name" },
+          email: { $first: "$donor.email" },
+          donationTypes: { $push: "$paymentType" },
         },
       },
-      { $match: searchCondition },
-      { $count: "total" },
+      {
+        $addFields: {
+          donationType: {
+            $cond: {
+              if: { $in: ["recurring", "$donationTypes"] },
+              then: "recurring",
+              else: "one-time",
+            },
+          },
+        },
+      },
     ];
 
-    const totalCountResult = await Order.aggregate(totalCountPipeline);
+    if (typeFilter) {
+      countPipeline.push({ $match: { donationType: typeFilter } });
+    }
+
+    if (Object.keys(searchCondition).length > 0) {
+      countPipeline.push({ $match: searchCondition });
+    }
+
+    countPipeline.push({ $count: "total" });
+    const totalCountResult = await Order.aggregate(countPipeline);
     const total = totalCountResult[0]?.total || 0;
 
     res.json({
@@ -268,6 +309,7 @@ router.get("/", isAdmin, async (req, res) => {
     });
   }
 });
+
 
 // Get Donor Details
 router.get("/:id", isAdmin, async (req, res) => {

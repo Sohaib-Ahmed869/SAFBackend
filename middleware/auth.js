@@ -1,4 +1,3 @@
-// middleware/auth.js
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
 
@@ -6,12 +5,13 @@ const auth = async (req, res, next) => {
   try {
     const token = req.header("Authorization").replace("Bearer ", "");
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
-
+    // Explicitly select the address field and other needed fields
+    const user = await User.findById(decoded.id).select("firstName lastName email phone country address notifications role");
+    
     if (!user) {
       throw new Error();
     }
-
+    
     req.user = user;
     req.token = token;
     next();

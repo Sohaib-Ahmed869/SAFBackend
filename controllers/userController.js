@@ -159,6 +159,7 @@ exports.loginAdmin = async (req, res) => {
 
     const isMatch = await bcrypt.compare(password, user.password);
 
+
     if (!isMatch) {
       throw new Error("Invalid login credentials");
     }
@@ -378,103 +379,151 @@ exports.googleAuth = async (req, res) => {
   }
 };
 
-exports.getMe = async (req, res) => {
-  try {
-    console.log(req.user);
+exports.getMe = async (req, res) => {   
+  try {     
+    console.log("Incoming user from middleware:", req.user);
+    
+    // Find user and populate all potential fields
     const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(404).json({
-        status: "Error",
-        message: "User not found",
-      });
-    }
+    
+    if (!user) {       
+      return res.status(404).json({         
+        status: "Error",         
+        message: "User not found",       
+      });     
+    }     
+
+    // Prepare a comprehensive user response
+    const userResponse = {
+      _id: user._id,
+      
+      // Name handling
+      name: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+      firstName: user.firstName,
+      lastName: user.lastName,
+      
+      // Contact information
+      email: user.email,
+      phone: user.phone,
+      country: user.country,
+      
+      // Address details with explicit null checks
+      address: {
+        street: user.address?.street || null,
+        city: user.address?.city || null,
+        state: user.address?.state || null,
+        postalCode: user.address?.postalCode || null
+      },
+      
+      // Notifications and preferences
+      agreeToMessages: user.notifications?.emailNotifications || false,
+      
+      // Additional context fields
+      role: user.role,
+      lastLogin: user.lastLogin
+    };
+
+    // Log the response for debugging
+    console.log("User Profile Response:", userResponse);
+
+    // Send the comprehensive user profile
     res.status(200).json({
       status: "Success",
-      user: {
-        _id: user._id,
-        // Combine firstName and lastName into a single name field
-        name: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        address: user.address,
-        country: user.country,
-        // Include any additional fields you might need on the frontend
-        agreeToMessages: user.agreeToMessages,
-      },
+      user: userResponse
     });
-  } catch (error) {
-    console.error("getMe error:", error);
-    res.status(500).json({
-      status: "Error",
-      message: "Could not get user data",
-      error: error.message,
-    });
-  }
+
+  } catch (error) {     
+    console.error("getMe error:", error);     
+    res.status(500).json({       
+      status: "Error",       
+      message: "Could not get user data",       
+      error: error.message,     
+    });   
+  } 
 };
 
 exports.updateUser = async (req, res) => {
   try {
+    console.log("Incoming Update Request Body (FULL):", JSON.stringify(req.body, null, 2));
+    
     const user = await User.findById(req.user._id);
-    // Destructure fields from the request body.
-    const {
-      firstName,
-      lastName,
-      email,
-      phone,
-      country,
-      address,
-      agreeToMessages,
-    } = req.body;
-
     if (!user) {
       return res.status(404).json({
         status: "Error",
         message: "User not found",
       });
     }
-
-    // Update basic fields if provided.
+    
+    const { firstName, lastName, email, phone, country, address, agreeToMessages } = req.body;
+    
+    // Update basic fields
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (firstName || lastName) {
-      // Update the concatenated name field.
-      user.name = `${firstName || user.firstName} ${lastName || user.lastName}`;
+      user.name = `${firstName || user.firstName} ${lastName || user.lastName}`.trim();
     }
     if (phone) user.phone = phone;
     if (country) user.country = country;
-    if (typeof agreeToMessages !== "undefined")
-      user.agreeToMessages = agreeToMessages;
-
-    // Update the address using the nested object (if provided)
+    
+    // Update the address explicitly if provided
     if (address) {
-      if (!user.address) {
-        user.address = {};
+      // Build a new address object merging existing data with incoming updates
+      if (address) {
+        // Rebuild the full address object
+        user.address = {
+          street: address.street || user.address?.street || "",
+          city: address.city || user.address?.city || "",
+          state: address.state || user.address?.state || "",
+          postalCode: address.postalCode || address.postcode || user.address?.postalCode || ""
+        };
+        user.markModified('address');
       }
-      if (address.street) user.address.street = address.street;
-      if (address.city) user.address.city = address.city;
-      if (address.state) user.address.state = address.state;
+      
+      // Mark the address as modified so Mongoose saves the change
+      user.markModified('address');
     }
-
-    await user.save();
-
-    res.status(200).json({
+    
+    // Update notifications/preferences if provided
+    if (typeof agreeToMessages !== "undefined") {
+      user.notifications = user.notifications || {};
+      user.notifications.emailNotifications = agreeToMessages;
+      user.notifications.monthlyNewsletter = agreeToMessages;
+    }
+    
+    // Save updated user document (you may remove validateModifiedOnly if issues persist)
+    const savedUser = await user.save({ validateModifiedOnly: true });
+    
+    const responsePayload = {
       status: "Success",
       message: "User updated successfully",
       user: {
-        _id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        address: user.address,
-        country: user.country,
-        agreeToMessages: user.agreeToMessages,
+        _id: savedUser._id,
+        firstName: savedUser.firstName,
+        lastName: savedUser.lastName,
+        name: savedUser.name,
+        email: savedUser.email,
+        phone: savedUser.phone,
+        address: {
+          street: savedUser.address?.street || null,
+          city: savedUser.address?.city || null,
+          state: savedUser.address?.state || null,
+          postalCode: savedUser.address?.postalCode || null
+        },
+        country: savedUser.country,
+        agreeToMessages: savedUser.notifications?.emailNotifications || false,
       },
-    });
+    };
+    
+    console.log("Response Payload (Detailed):", JSON.stringify(responsePayload, null, 2));
+    res.status(200).json(responsePayload);
+    
   } catch (error) {
-    console.error("Update user error:", error);
+    console.error("Update User Error:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      details: JSON.stringify(error, Object.getOwnPropertyNames(error))
+    });
     res.status(500).json({
       status: "Error",
       message: "Could not update user data",
@@ -483,7 +532,7 @@ exports.updateUser = async (req, res) => {
   }
 };
 
-// In controllers/userController.js
+
 
 exports.updatePassword = async (req, res) => {
   try {
@@ -498,6 +547,7 @@ exports.updatePassword = async (req, res) => {
     }
 
     const isMatch = await bcrypt.compare(currentPassword, user.password);
+
     if (!isMatch) {
       return res.status(400).json({
         status: "Error",
@@ -522,3 +572,4 @@ exports.updatePassword = async (req, res) => {
     });
   }
 };
+
