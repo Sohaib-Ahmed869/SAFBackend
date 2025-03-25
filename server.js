@@ -26,14 +26,14 @@ const app = express();
 connectDB();
 setupInstallmentProcessingJob();
 // Middleware
-app.use(cors({ origin: '*' }));
+// app.use(cors({ origin: '*' }));
 
-//  app.use(cors({
-//   origin: [
-//     "https://shahidafridifoundation.org.au",
-//     "https://www.shahidafridifoundation.org.au",
-//   ],
-// })) 
+ app.use(cors({
+  origin: [
+    "https://shahidafridifoundation.org.au",
+    "https://www.shahidafridifoundation.org.au",
+  ],
+})) 
 app.use(express.json());
 
 app.get("/", (req, res) => {
