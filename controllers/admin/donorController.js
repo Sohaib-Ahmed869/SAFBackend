@@ -149,6 +149,168 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
   }
 });
 // Get Donors List
+// router.get("/", isAdmin, async (req, res) => {
+//   try {
+//     const page = parseInt(req.query.page) || 1;
+//     const limit = parseInt(req.query.limit) || 10;
+//     const search = req.query.search || "";
+//     const sortBy = req.query.sortBy || "totalDonated";
+//     const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
+//     const type = req.query.type || "All"; // "All", "single", "recurring", or "installments"
+
+//     const skip = (page - 1) * limit;
+
+//     // Build search condition on grouped fields (name and email)
+//     const searchCondition = search
+//       ? {
+//           $or: [
+//             { name: { $regex: search, $options: "i" } },
+//             { email: { $regex: search, $options: "i" } },
+//           ],
+//         }
+//       : {};
+
+//     // Prepare donation type filter (convert "single" to "one-time")
+//     let typeFilter;
+//     if (type && type !== "All") {
+//       typeFilter = type === "single" ? "one-time" : type;
+//     }
+
+//     // Aggregation pipeline to get donor info
+//     const aggregatePipeline = [
+//       {
+//         $match: {
+//           status: { $ne: "cancelled" },
+//           paymentStatus: { $in: ["completed", "active"] },
+//         },
+//       },
+//       {
+//         $lookup: {
+//           from: "users",
+//           localField: "user",
+//           foreignField: "_id",
+//           as: "donor",
+//         },
+//       },
+//       { $unwind: "$donor" },
+//       {
+//         $group: {
+//           _id: "$user",
+//           name: { $first: "$donor.name" },
+//           email: { $first: "$donor.email" },
+//           phone: { $first: "$donor.phone" },
+//           totalDonated: { $sum: "$totalAmount" },
+//           donationCount: { $sum: 1 },
+//           lastDonationDate: { $max: "$createdAt" },
+//           firstDonationDate: { $min: "$createdAt" },
+//           donationTypes: { $push: "$paymentType" },
+//         },
+//       },
+//       {
+//         $addFields: {
+//           id: "$_id",
+//           donationType: {
+//             $cond: {
+//               if: { $in: ["recurring", "$donationTypes"] },
+//               then: "recurring",
+//               else: "one-time",
+//             },
+//           },
+//         },
+//       },
+//     ];
+
+//     // If a donation type filter exists, add it
+//     if (typeFilter) {
+//       aggregatePipeline.push({ $match: { donationType: typeFilter } });
+//     }
+
+//     // Add the search condition if provided
+//     if (Object.keys(searchCondition).length > 0) {
+//       aggregatePipeline.push({ $match: searchCondition });
+//     }
+
+//     // Finally add sorting, pagination
+//     aggregatePipeline.push(
+//       { $sort: { [sortBy]: sortOrder } },
+//       { $skip: skip },
+//       { $limit: limit }
+//     );
+
+//     const donors = await Order.aggregate(aggregatePipeline);
+
+//     // Build a similar pipeline for total count (exclude pagination stages)
+//     const countPipeline = [
+//       {
+//         $match: {
+//           status: { $ne: "cancelled" },
+//           paymentStatus: { $in: ["completed", "active"] },
+//         },
+//       },
+//       {
+//         $lookup: {
+//           from: "users",
+//           localField: "user",
+//           foreignField: "_id",
+//           as: "donor",
+//         },
+//       },
+//       { $unwind: "$donor" },
+//       {
+//         $group: {
+//           _id: "$user",
+//           name: { $first: "$donor.name" },
+//           email: { $first: "$donor.email" },
+//           donationTypes: { $push: "$paymentType" },
+//         },
+//       },
+//       {
+//         $addFields: {
+//           donationType: {
+//             $cond: {
+//               if: { $in: ["recurring", "$donationTypes"] },
+//               then: "recurring",
+//               else: "one-time",
+//             },
+//           },
+//         },
+//       },
+//     ];
+
+//     if (typeFilter) {
+//       countPipeline.push({ $match: { donationType: typeFilter } });
+//     }
+
+//     if (Object.keys(searchCondition).length > 0) {
+//       countPipeline.push({ $match: searchCondition });
+//     }
+
+//     countPipeline.push({ $count: "total" });
+//     const totalCountResult = await Order.aggregate(countPipeline);
+//     const total = totalCountResult[0]?.total || 0;
+
+//     res.json({
+//       status: "Success",
+//       data: {
+//         donors,
+//         pagination: {
+//           total,
+//           pages: Math.ceil(total / limit),
+//           currentPage: page,
+//           perPage: limit,
+//         },
+//       },
+//     });
+//   } catch (error) {
+//     res.status(500).json({
+//       status: "Error",
+//       message: "Failed to fetch donors",
+//       error: error.message,
+//     });
+//   }
+// });
+
+
 router.get("/", isAdmin, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -196,9 +358,25 @@ router.get("/", isAdmin, async (req, res) => {
       {
         $group: {
           _id: "$user",
+          // Name fields
           name: { $first: "$donor.name" },
+          firstName: { $first: "$donor.firstName" },
+          lastName: { $first: "$donor.lastName" },
+          
+          // Contact details
           email: { $first: "$donor.email" },
           phone: { $first: "$donor.phone" },
+          
+          // Address details - get the entire address object
+          address: { 
+            $first: "$donor.address"
+          },
+          
+          // Other user details
+          country: { $first: "$donor.country" },
+          dateOfBirth: { $first: "$donor.dateOfBirth" },
+          
+          // Donation metrics
           totalDonated: { $sum: "$totalAmount" },
           donationCount: { $sum: 1 },
           lastDonationDate: { $max: "$createdAt" },
@@ -209,6 +387,22 @@ router.get("/", isAdmin, async (req, res) => {
       {
         $addFields: {
           id: "$_id",
+          // Create a formatted address field that handles possible null values
+          formattedAddress: {
+            $cond: [
+              { $ifNull: ["$address", false] },
+              {
+                $concat: [
+                  { $ifNull: [{ $concat: [{ $ifNull: ["$address.street", ""] }, ", "] }, ""] },
+                  { $ifNull: [{ $concat: [{ $ifNull: ["$address.city", ""] }, ", "] }, ""] },
+                  { $ifNull: [{ $concat: [{ $ifNull: ["$address.state", ""] }, " "] }, ""] },
+                  { $ifNull: ["$address.postalCode", ""] }
+                ]
+              },
+              ""
+            ]
+          },
+          // Determine primary donation type
           donationType: {
             $cond: {
               if: { $in: ["recurring", "$donationTypes"] },
@@ -309,7 +503,6 @@ router.get("/", isAdmin, async (req, res) => {
     });
   }
 });
-
 
 // Get Donor Details
 router.get("/:id", isAdmin, async (req, res) => {

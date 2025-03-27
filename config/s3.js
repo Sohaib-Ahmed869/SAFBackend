@@ -1,14 +1,9 @@
 // config/s3.js
 const path = require("path");
 const multer = require("multer");
-const {
-  S3Client,
-  DeleteObjectCommand,
-  PutObjectCommand,
-} = require("@aws-sdk/client-s3");
-const multerS3 = require("multer-s3-v3"); // Make sure to install this package
+const { S3Client, DeleteObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const multerS3 = require("multer-s3-v3");
 
-// Initialize S3 client
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || "us-east-1",
   credentials: {
@@ -17,12 +12,17 @@ const s3Client = new S3Client({
   },
 });
 
-// Configure multer for S3 uploads
+// Configure multer for S3 uploads with a function to set Content-Disposition inline
 const upload = multer({
   storage: multerS3({
     s3: s3Client,
     bucket: process.env.S3_BUCKET_NAME,
-    // Removed ACL setting since the bucket doesn't support ACLs
+    // Use a function to set the header explicitly
+    contentDisposition: function (req, file, cb) {
+      cb(null, "inline");
+    },
+    // Automatically detect and set the correct MIME type
+    contentType: multerS3.AUTO_CONTENT_TYPE,
     metadata: function (req, file, cb) {
       cb(null, { fieldName: file.fieldname });
     },
@@ -54,7 +54,6 @@ const deleteS3Object = async (key) => {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: key,
     });
-
     return await s3Client.send(command);
   } catch (error) {
     console.error("Error deleting from S3:", error);

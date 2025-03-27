@@ -8,6 +8,7 @@ const {
   getDonations,
   getDonationsExport,
   getDonationForUser,
+  getAllDonations,
   getDonationById, // Added this
   updateDonationStatus, // Added this
 } = require("../../controllers/admin/orderController");
@@ -15,6 +16,8 @@ const {
 router.get("/dashboard/stats", isAdmin, getDashboardStats);
 router.get("/dashboard/top-donors", isAdmin, getTopDonors);
 router.get("/donations", isAdmin, getDonations);
+router.get("/donations/all", isAdmin, getAllDonations);
+
 // Important: Order matters for routes with parameters
 // More specific routes should come before general ones to avoid conflicts
 router.get("/donations/user/:userId", isAdmin, getDonationForUser); // User-specific route first

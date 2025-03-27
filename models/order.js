@@ -272,6 +272,10 @@ const OrderSchema = new Schema(
       reason: String,
       cancelledBy: Schema.Types.ObjectId, // User or admin ID
     },
+    receiptUrl: {
+      type: String,
+      default: "",
+    },
     lastPaymentDate: Date,
   },
   {

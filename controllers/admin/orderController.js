@@ -103,7 +103,6 @@ exports.getTopDonors = async (req, res) => {
   }
 };
 
-// Get Donations List with Filtering and Pagination
 exports.getDonations = async (req, res) => {
   try {
     const {
@@ -118,15 +117,12 @@ exports.getDonations = async (req, res) => {
 
     // Build filter conditions
     const filter = {};
-
     if (status && status !== "All") {
       filter.paymentStatus = status;
     }
-
     if (type && type !== "All") {
       filter.paymentType = type;
     }
-
     // Search in donor details or donation ID
     if (search) {
       filter.$or = [
@@ -151,20 +147,38 @@ exports.getDonations = async (req, res) => {
     // Get total count for pagination
     const total = await Order.countDocuments(filter);
 
-    // Format data for response
+    // Format data for response - include all fields with computed properties added
     const formattedDonations = donations.map((donation) => ({
-      id: donation._id,
-      donor: donation.donorDetails.name,
-      email: donation.donorDetails.email,
+      id: donation._id, // Explicitly add "id" for frontend use
+      ...donation, // Include every field from the database document
+      // Computed/override fields for UI use:
+      donor: donation.donorDetails?.name,
+      email: donation.donorDetails?.email,
       amount: donation.totalAmount,
       cause: donation.items[0]?.title || "Multiple Items",
       date: donation.createdAt,
-      status: donation.paymentStatus,
       type: donation.paymentType,
-      recurringDetails: donation.recurringDetails,
-      donationId: donation.donationId,
-      
+      status: donation.paymentStatus,
+      nextPaymentDate:
+        donation.recurringDetails?.nextPaymentDate ||
+        donation.installmentDetails?.nextInstallmentDate,
     }));
+
+    // Log some details (optional)
+    console.log("Donations Fetched:");
+    console.log("Total Donations:", total);
+    console.log("Current Page:", page);
+    console.log("Limit:", limit);
+    console.log("Number of Donations Returned:", formattedDonations.length);
+    formattedDonations.slice(0, 3).forEach((donation, index) => {
+      console.log(`Donation ${index + 1}:`);
+      console.log("- ID:", donation.id);
+      console.log("- Donor:", donation.donor);
+      console.log("- Amount:", donation.amount);
+      console.log("- Type:", donation.type);
+      console.log("- Status:", donation.status);
+      console.log("---");
+    });
 
     res.json({
       donations: formattedDonations,
@@ -176,9 +190,78 @@ exports.getDonations = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Error in getDonations:", error);
     res.status(500).json({
       status: "Error",
       message: "Failed to fetch donations",
+      error: error.message,
+    });
+  }
+};
+
+
+// In your controller (e.g., donationController.js)
+exports.getAllDonations = async (req, res) => {
+  try {
+    const {
+      search = "",
+      status,
+      type,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+    } = req.query;
+
+    // Build filter conditions
+    const filter = {};
+    if (status && status !== "All") {
+      filter.paymentStatus = status;
+    }
+    if (type && type !== "All") {
+      filter.paymentType = type;
+    }
+    // Search in donor details or donation ID
+    if (search) {
+      filter.$or = [
+        { donationId: { $regex: search, $options: "i" } },
+        { "donorDetails.name": { $regex: search, $options: "i" } },
+        { "donorDetails.email": { $regex: search, $options: "i" } },
+      ];
+    }
+
+    // Build sort configuration
+    const sortConfig = {};
+    sortConfig[sortBy] = sortOrder === "asc" ? 1 : -1;
+
+    // Fetch all donations without pagination
+    const donations = await Order.find(filter)
+      .sort(sortConfig)
+      .populate("user", "name email")
+      .lean();
+
+    // Optionally, format your donations (if needed)
+    const formattedDonations = donations.map((donation) => ({
+      id: donation._id,
+      ...donation,
+      donor: donation.donorDetails?.name,
+      email: donation.donorDetails?.email,
+      amount: donation.totalAmount,
+      cause: donation.items[0]?.title || "Multiple Items",
+      date: donation.createdAt,
+      type: donation.paymentType,
+      status: donation.paymentStatus,
+      nextPaymentDate:
+        donation.recurringDetails?.nextPaymentDate ||
+        donation.installmentDetails?.nextInstallmentDate,
+    }));
+
+    res.json({
+      donations: formattedDonations,
+    });
+  } catch (error) {
+    console.error("Error in getAllDonations:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to fetch all donations",
       error: error.message,
     });
   }

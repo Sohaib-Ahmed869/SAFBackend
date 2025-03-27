@@ -6,6 +6,12 @@ const { sendReceiptEmail } = require("../services/recieptUtils");
 const { sendEmail } = require("../services/emailUtil");
 const crypto = require("crypto");
 const bcrypt = require("bcrypt");
+const { upload } = require("../config/s3");
+const path = require("path");
+const axios = require("axios");
+
+
+
 /**
  * Creates a user account for anonymous donors and sends credentials email
  * @param {Object} donorDetails - Donor information from the order
@@ -1133,7 +1139,7 @@ exports.createOrder = async (req, res) => {
           }
 
           await savedOrder.save();
-        } else if (paymentType === "recurring") {
+        }  else if (paymentType === "recurring") {
           // Recurring payment processing
           let customer;
           try {
@@ -1160,7 +1166,7 @@ exports.createOrder = async (req, res) => {
                 `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
               );
             }
-
+        
             await stripe.customers.update(customer.id, {
               invoice_settings: { default_payment_method: stripePaymentMethodId },
             });
@@ -1198,7 +1204,7 @@ exports.createOrder = async (req, res) => {
               throw stripeError;
             }
           }
-
+        
           let interval;
           switch (recurringDetails.frequency) {
             case "daily":
@@ -1216,14 +1222,15 @@ exports.createOrder = async (req, res) => {
             default:
               interval = "month";
           }
-
+        
           const product = await stripe.products.create({
             name: "Recurring Donation",
             metadata: { donationId: savedOrder.donationId },
           });
           console.log(`Created product for recurring donation: ${product.id}`);
-
-          const subscription = await stripe.subscriptions.create({
+        
+          // Build the subscription data object
+          let subscriptionData = {
             customer: customer.id,
             items: [
               {
@@ -1241,19 +1248,28 @@ exports.createOrder = async (req, res) => {
             },
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
-          });
+          };
+        
+          if (recurringDetails.endDate) {
+            const cancelAtTimestamp = Math.floor(
+              new Date(recurringDetails.endDate).getTime() / 1000
+            );
+            subscriptionData.cancel_at = cancelAtTimestamp;
+            console.log(`Subscription will cancel at ${recurringDetails.endDate}`);
+          }
+        
+          const subscription = await stripe.subscriptions.create(subscriptionData);
           console.log(
             `Created subscription: ${subscription.id} for customer ${customer.id}, status: ${subscription.status}`
           );
-
+        
           savedOrder.transactionDetails = {
             stripeCustomerId: customer.id,
             stripeSubscriptionId: subscription.id,
             stripeStatus: subscription.status,
             clientSecret: subscription.latest_invoice.payment_intent?.client_secret,
           };
-
-          // Only send receipt and mark as completed if subscription is active.
+        
           if (subscription.status === "active") {
             savedOrder.paymentStatus = "completed";
             try {
@@ -1265,9 +1281,10 @@ exports.createOrder = async (req, res) => {
             // For any non-active subscription (e.g. pending/incomplete), leave the status as pending.
             savedOrder.paymentStatus = "pending";
           }
-
+        
           await savedOrder.save();
-        } else if (paymentType === "installments") {
+        }
+        else if (paymentType === "installments") {
           // Installment processing
           let customer;
           try {
@@ -1684,43 +1701,37 @@ exports.processNextInstallment = async (orderId) => {
       return;
     }
 
-    // Check if this is an installment order with remaining installments
+    // Ensure this is an active installment order with remaining installments.
     if (
       order.paymentType !== "installments" ||
       !order.installmentDetails ||
       order.installmentDetails.status !== "active" ||
-      order.installmentDetails.installmentsPaid >=
-        order.installmentDetails.numberOfInstallments
+      order.installmentDetails.installmentsPaid >= order.installmentDetails.numberOfInstallments
     ) {
       console.log(`No installment to process for order: ${orderId}`);
       return;
     }
 
-    // Check if it's time to process the next installment
+    // Check if it's time to process the next installment.
     const now = new Date();
     const nextDate = new Date(order.installmentDetails.nextInstallmentDate);
-
     if (now < nextDate) {
       console.log(`Not yet time for next installment for order: ${orderId}`);
       return;
     }
 
+    const installmentNumber = order.installmentDetails.installmentsPaid + 1;
     console.log(
-      `Processing installment ${
-        order.installmentDetails.installmentsPaid + 1
-      }/${order.installmentDetails.numberOfInstallments} for order: ${orderId}`
+      `Processing installment ${installmentNumber}/${order.installmentDetails.numberOfInstallments} for order: ${orderId}`
     );
 
-    const installmentNumber = order.installmentDetails.installmentsPaid + 1;
-
-    // Process payment with Stripe
+    // Process payment with Stripe.
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(order.installmentDetails.installmentAmount * 100),
       currency: "aud",
       customer: order.transactionDetails.stripeCustomerId,
-      payment_method: order.transactionDetails.stripePaymentMethodId,
+      payment_method: order.transactionDetails.stripePaymentMethodId, // ensure this is stored from the initial installment processing
       automatic_payment_methods: {
         enabled: true,
         allow_redirects: "never",
@@ -1736,21 +1747,21 @@ exports.processNextInstallment = async (orderId) => {
       },
     });
 
-    // Update order with payment result
+    // Update order with payment result.
     order.installmentDetails.installmentsPaid = installmentNumber;
 
-    // Calculate next installment date
+    // Calculate and store the next installment date if there are more installments remaining.
     if (installmentNumber < order.installmentDetails.numberOfInstallments) {
       order.installmentDetails.nextInstallmentDate = new Date(
         Date.now() + 30 * 24 * 60 * 60 * 1000
       );
     } else {
-      // Final installment
+      // Final installment: mark order as completed.
       order.installmentDetails.status = "completed";
       order.paymentStatus = "completed";
     }
 
-    // Add to installment history
+    // Record this installment in the history.
     order.installmentDetails.installmentHistory.push({
       installmentNumber: installmentNumber,
       amount: order.installmentDetails.installmentAmount,
@@ -1765,24 +1776,23 @@ exports.processNextInstallment = async (orderId) => {
       `Successfully processed installment ${installmentNumber} for order: ${orderId}`
     );
 
-    // Send receipt email for completed installment
+    // Send receipt email for the completed installment.
     try {
       const { sendReceiptEmail } = require("../services/recieptUtils");
       await sendReceiptEmail(order, installmentNumber);
     } catch (emailError) {
       console.error("Failed to send receipt email:", emailError);
-      // Don't fail the order update if email fails
+      // Do not fail the order update if email sending fails.
     }
 
     return { success: true, paymentIntent };
   } catch (error) {
     console.error(`Error processing installment for order ${orderId}:`, error);
 
-    // Try to update the order with error information
+    // On error, update the order with error information without incrementing installmentsPaid.
     try {
       const order = await Order.findById(orderId);
       if (order && order.installmentDetails) {
-        // Add failure to history but don't increment installmentsPaid
         order.installmentDetails.installmentHistory.push({
           installmentNumber: order.installmentDetails.installmentsPaid + 1,
           amount: order.installmentDetails.installmentAmount,
@@ -1790,12 +1800,10 @@ exports.processNextInstallment = async (orderId) => {
           status: "failed",
           error: error.message,
         });
-
-        // Try again in 24 hours
+        // Schedule a retry in 24 hours.
         order.installmentDetails.nextInstallmentDate = new Date(
           Date.now() + 24 * 60 * 60 * 1000
         );
-
         await order.save();
       }
     } catch (updateError) {
@@ -1806,5 +1814,183 @@ exports.processNextInstallment = async (orderId) => {
     }
 
     return { success: false, error: error.message };
+  }
+};
+
+
+exports.uploadReceipt = [
+  upload.single("receipt"), // "receipt" must match the FormData key from the frontend
+  async (req, res) => {
+    try {
+      const { donationId, userId } = req.body;
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "No file uploaded",
+        });
+      }
+
+      // multer-s3 automatically adds a "location" property with the S3 file URL
+      const fileUrl = req.file.location;
+
+      // Find the order in your database by donationId
+      const order = await Order.findOne({ donationId });
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: `Order not found for donationId: ${donationId}`,
+        });
+      }
+
+      // Store the file URL in your order document along with metadata
+      order.receiptUrl = fileUrl;
+      order.receiptUploadedAt = new Date();
+      if (userId) {
+        order.receiptUploadedBy = userId;
+      }
+      await order.save();
+
+      // Return a receipt object so the frontend receives complete data
+      return res.json({
+        success: true,
+        message: "Receipt uploaded successfully",
+        receipt: {
+          fileUrl,
+          fileName: path.basename(fileUrl),
+          uploadDate: order.receiptUploadedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Error uploading receipt:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Server error uploading receipt",
+        error: error.message,
+      });
+    }
+  },
+];
+
+// Get Order By Donation ID Controller
+exports.getOrderByDonationId = async (req, res) => {
+  try {
+    const { donationId } = req.params;
+    const order = await Order.findOne({ donationId });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: `Order not found for donationId: ${donationId}`,
+      });
+    }
+    return res.json({
+      success: true,
+      order,
+    });
+  } catch (error) {
+    console.error("Error fetching order by donationId:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error fetching order",
+      error: error.message,
+    });
+  }
+};
+
+// Delete Receipt Controller
+exports.deleteReceipt = async (req, res) => {
+  try {
+    const { donationId } = req.params;
+    const order = await Order.findOne({ donationId });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: `Order not found for donationId: ${donationId}`,
+      });
+    }
+    if (!order.receiptUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "No receipt to delete.",
+      });
+    }
+
+    // Only clear receipt info in the order document (do not delete from S3)
+    order.receiptUrl = undefined;
+    order.receiptUploadedAt = undefined;
+    order.receiptUploadedBy = undefined;
+    await order.save();
+
+    return res.json({
+      success: true,
+      message: "Receipt deleted from database successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting receipt:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error deleting receipt",
+      error: error.message,
+    });
+  }
+};
+
+
+exports.proxyReceiptForViewing = async (req, res) => {
+  try {
+    const { donationId } = req.params;
+    
+    // Find the order in your database
+    const order = await Order.findOne({ donationId });
+    if (!order || !order.receiptUrl) {
+      return res.status(404).json({
+        success: false,
+        message: "Receipt not found",
+      });
+    }
+    
+    const receiptUrl = order.receiptUrl;
+    
+    try {
+      // Fetch the file from S3
+      const response = await axios.get(receiptUrl, {
+        responseType: 'arraybuffer'
+      });
+      
+      // Determine content type based on the file name
+      const fileName = receiptUrl.split('/').pop();
+      const fileExt = path.extname(fileName).replace('.', '').toLowerCase();
+      
+      const contentTypes = {
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif',
+        'pdf': 'application/pdf',
+      };
+      
+      const contentType = contentTypes[fileExt] || 'application/octet-stream';
+      
+      // Set headers for inline display
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Cache-Control', 'public, max-age=300'); // Cache for 5 minutes
+      
+      // Send the file
+      return res.send(response.data);
+    } catch (error) {
+      console.error("Error fetching receipt from S3:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Error fetching receipt from storage",
+      });
+    }
+  } catch (error) {
+    console.error("Error proxying receipt for viewing:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error proxying receipt",
+      error: error.message,
+    });
   }
 };

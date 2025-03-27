@@ -30,7 +30,6 @@ const setupInstallmentProcessingJob = () => {
             `Error processing installment for order ${order._id}:`,
             error
           );
-          // Continue with next order even if this one fails
         }
       }
 
