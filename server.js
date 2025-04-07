@@ -20,20 +20,30 @@ const eventRoutesAdmin = require("./routes/admin/event.routes");
 const joinRoutes = require("./routes/joinRoutes");
 const newsLetter = require("./models/newsletter");
 const setupInstallmentProcessingJob = require("./jobs/processInstallments");
+const {
+  scheduleSubscriptionChecks,
+} = require("./services/subscriptionScheduler");
 const app = express();
+
+const Order = require("./models/order");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // Connect to database
 connectDB();
 setupInstallmentProcessingJob();
+scheduleSubscriptionChecks();
 // Middleware
-app.use(cors({ origin: '*' }));
+// app.use(cors({ origin: '*' }));
 
-//  app.use(cors({
-//   origin: [
-//     "https://shahidafridifoundation.org.au",
-//     "https://www.shahidafridifoundation.org.au",
-//   ],
-// })) 
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://shahidafridifoundation.org.au",
+      "https://www.shahidafridifoundation.org.au",
+    ],
+  })
+);
 app.use(express.json());
 
 app.get("/", (req, res) => {

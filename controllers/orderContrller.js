@@ -10,8 +10,6 @@ const { upload } = require("../config/s3");
 const path = require("path");
 const axios = require("axios");
 
-
-
 /**
  * Creates a user account for anonymous donors and sends credentials email
  * @param {Object} donorDetails - Donor information from the order
@@ -48,8 +46,7 @@ const createUserForDonor = async (donorDetails, donationId) => {
     console.log(`Created new user account for donor: ${donorDetails.email}`);
 
     // Send welcome email with credentials
-    const loginUrl =
-      "https://shahidafridifoundation.org.au/login";
+    const loginUrl = "https://shahidafridifoundation.org.au/login";
 
     const emailSubject =
       "Welcome to Shahid Afridi Foundation - Your Account Details";
@@ -154,702 +151,31 @@ const generateUniqueDonationId = async (
   );
 };
 
-// exports.createOrder = async (req, res) => {
-//   try {
-//     const {
-//       items,
-//       paymentType,
-//       adminCostContribution,
-//       donorDetails,
-//       paymentMethod,
-//       totalAmount,
-//       recurringDetails,
-//       installmentDetails,
-//       stripePaymentMethodId,
-//       updateUserDetails,
-//     } = req.body;
-
-//     console.log("Received order data:", req.body);
-
-//     // Validate required fields
-//     if (!items || !paymentType || !donorDetails) {
-//       return res.status(400).json({
-//         status: "Error",
-//         message: "Missing required fields",
-//       });
-//     }
-
-//     // Get user from request
-//     const user = req.user;
-
-//     // Update user details if needed
-//     if (user && (updateUserDetails || donorDetails.rememberDetails)) {
-//       try {
-//         // Update user with donor details
-//         const userUpdates = {
-//           name: donorDetails.name,
-//           phone: donorDetails.phone,
-//           // Don't update email if user already has one
-//           // email: donorDetails.email,
-//           address: {
-//             street: donorDetails.streetAddress,
-//             city: donorDetails.townCity,
-//             state: donorDetails.state,
-//             postalCode: donorDetails.postcode,
-//           },
-//         };
-
-//         await User.findByIdAndUpdate(user._id, userUpdates);
-//         console.log(`Updated user details for user ${user._id}`);
-//       } catch (userUpdateError) {
-//         console.error("Error updating user details:", userUpdateError);
-//         // Don't fail the order if user update fails
-//       }
-//     }
-
-//     // Generate unique donation ID with user info
-//     const donationId = await generateUniqueDonationId(async (id) => {
-//       // Check if ID exists in database
-//       const existingOrder = await Order.findOne({ donationId: id });
-//       return !!existingOrder;
-//     }, user);
-
-//     // Validate recurring payment details
-//     if (paymentType === "recurring") {
-//       if (
-//         !recurringDetails ||
-//         !recurringDetails.frequency ||
-//         !recurringDetails.amount
-//       ) {
-//         return res.status(400).json({
-//           status: "Error",
-//           message: "Recurring payment requires frequency and amount",
-//         });
-//       }
-
-//       const validFrequencies = ["daily", "weekly", "monthly", "yearly"];
-//       if (!validFrequencies.includes(recurringDetails.frequency)) {
-//         return res.status(400).json({
-//           status: "Error",
-//           message: "Invalid frequency for recurring payment",
-//         });
-//       }
-//     }
-
-//     // Validate installment payment details
-//     if (paymentType === "installments") {
-//       if (
-//         !installmentDetails ||
-//         !installmentDetails.numberOfInstallments ||
-//         !installmentDetails.installmentAmount
-//       ) {
-//         return res.status(400).json({
-//           status: "Error",
-//           message:
-//             "Installment payment requires numberOfInstallments and installmentAmount",
-//         });
-//       }
-
-//       // Validate number of installments (1-12 months)
-//       if (
-//         installmentDetails.numberOfInstallments < 1 ||
-//         installmentDetails.numberOfInstallments > 12
-//       ) {
-//         return res.status(400).json({
-//           status: "Error",
-//           message: "Number of installments must be between 1 and 12",
-//         });
-//       }
-//     }
-
-//     if (donorDetails.rememberDetails && user) {
-//       await User.findByIdAndUpdate(user._id, {
-//         name: donorDetails.name,
-//         phone: donorDetails.phone,
-//         email: donorDetails.email,
-//         address: {
-//           street: donorDetails.streetAddress,
-//           city: donorDetails.townCity,
-//           state: donorDetails.state,
-//           postcode: donorDetails.postcode,
-//         },
-//       });
-//     }
-
-//     // Process items array
-//     const processedItems = items.map((item) => ({
-//       title: item.title,
-//       price: item.price,
-//       quantity: item.quantity || 1,
-//       onBehalfOf: item.onBehalfOf || null,
-//     }));
-
-//     // Prepare recurring details if applicable
-//     let orderRecurringDetails = null;
-//     if (paymentType === "recurring") {
-//       orderRecurringDetails = {
-//         frequency: recurringDetails.frequency,
-//         amount: recurringDetails.amount,
-//         startDate: new Date(),
-//         status: "active",
-//         nextPaymentDate: calculateNextPaymentDate(
-//           new Date(),
-//           recurringDetails.frequency
-//         ),
-//         totalPayments: 0,
-//         paymentHistory: [],
-//       };
-//     }
-
-//     // Prepare installment details if applicable
-//     let orderInstallmentDetails = null;
-//     if (paymentType === "installments") {
-//       // Calculate interval in days between payments (30 days for monthly)
-//       const paymentIntervalDays = 30;
-
-//       orderInstallmentDetails = {
-//         numberOfInstallments: installmentDetails.numberOfInstallments,
-//         installmentAmount: installmentDetails.installmentAmount,
-//         startDate: new Date(),
-//         status: "active",
-//         installmentsPaid: 0,
-//         nextInstallmentDate: new Date(),
-//         installmentHistory: [],
-//         paymentIntervalDays: paymentIntervalDays,
-//       };
-//     }
-
-//     // Create order with donationId
-//     const order = new Order({
-//       user: user ? user._id : null,
-//       donationId,
-//       items: processedItems,
-//       paymentType,
-//       adminCostContribution: {
-//         included: !!adminCostContribution,
-//         amount: adminCostContribution || 0,
-//       },
-//       donorDetails: {
-//         name: donorDetails.name,
-//         phone: donorDetails.phone,
-//         email: donorDetails.email,
-//         address: {
-//           street: donorDetails.streetAddress,
-//           city: donorDetails.townCity,
-//           state: donorDetails.state,
-//           postcode: donorDetails.postcode,
-//         },
-//         agreeToMessages: donorDetails.agreeToMessages,
-//       },
-//       paymentMethod,
-//       paymentStatus: paymentMethod === "bank" ? "pending" : "processing",
-//       totalAmount,
-//       recurringDetails: orderRecurringDetails,
-//       installmentDetails: orderInstallmentDetails,
-//       transactionDetails: {},
-//     });
-
-//     // Attempt to save with retries in case of donationId collision
-//     let savedOrder = null;
-//     let retries = 3;
-
-//     while (retries > 0) {
-//       try {
-//         savedOrder = await order.save();
-//         break;
-//       } catch (error) {
-//         if (error.code === 11000 && error.keyPattern.donationId) {
-//           // Duplicate donationId, generate a new one and retry
-//           order.donationId = `D${year}${month}${Math.floor(
-//             Math.random() * 10000
-//           )
-//             .toString()
-//             .padStart(4, "0")}`;
-//           retries--;
-//         } else {
-//           throw error;
-//         }
-//       }
-//     }
-
-//     if (!savedOrder) {
-//       throw new Error(
-//         "Failed to generate unique donation ID after multiple attempts"
-//       );
-//     }
-
-//     console.log("Order saved:", savedOrder);
-
-//     if (!user && donorDetails.email) {
-//       try {
-//         const newUser = await createUserForDonor(
-//           donorDetails,
-//           savedOrder.donationId
-//         );
-
-//         if (newUser) {
-//           // Link the order to the newly created user
-//           savedOrder.user = newUser._id;
-//           await savedOrder.save();
-//           console.log(
-//             `Linked order ${savedOrder._id} to new user ${newUser._id}`
-//           );
-//         }
-//       } catch (userCreateError) {
-//         // Log error but don't fail the order
-//         console.error(
-//           "Failed to create user account for donor:",
-//           userCreateError
-//         );
-//       }
-//     }
-
-//     // Process payment with Stripe if card is selected
-//     if (paymentMethod === "card" && stripePaymentMethodId) {
-//       try {
-//         if (paymentType === "single") {
-//           // Process one-time payment
-//           const paymentIntent = await stripe.paymentIntents.create({
-//             amount: Math.round(totalAmount * 100),
-//             currency: "aud",
-//             payment_method: stripePaymentMethodId,
-//             confirm: true,
-//             off_session: true,
-//             description: `Donation ${savedOrder.donationId}`,
-//             metadata: {
-//               donationId: savedOrder.donationId,
-//               orderId: savedOrder._id.toString(),
-//             },
-//           });
-
-//           // Update order with payment intent details
-//           savedOrder.transactionDetails = {
-//             stripePaymentMethodId,
-//             stripePaymentIntentId: paymentIntent.id,
-//             stripeStatus: paymentIntent.status,
-//             clientSecret: paymentIntent.client_secret,
-//           };
-
-//           // Update payment status based on Stripe status
-//           if (paymentIntent.status === "succeeded") {
-//             // Send receipt email for completed payments
-//             try {
-//               await sendReceiptEmail(savedOrder);
-//             } catch (emailError) {
-//               console.error("Failed to send receipt email:", emailError);
-//               // Don't fail the order if email fails
-//             }
-//             savedOrder.paymentStatus = "completed";
-//           } else if (paymentIntent.status === "requires_action") {
-//             savedOrder.paymentStatus = "requires_action";
-//           }
-
-//           await savedOrder.save();
-//         }
-//         // Handle different payment types
-//         else if (paymentType === "recurring") {
-//           // IMPROVED PAYMENT METHOD HANDLING
-//           let customer;
-
-//           try {
-//             // First, try to retrieve the payment method
-//             const paymentMethod = await stripe.paymentMethods.retrieve(
-//               stripePaymentMethodId
-//             );
-
-//             // If it's already attached to a customer
-//             if (paymentMethod.customer) {
-//               console.log(
-//                 `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethod.customer}`
-//               );
-
-//               // Use that customer
-//               customer = await stripe.customers.retrieve(
-//                 paymentMethod.customer
-//               );
-//               console.log(`Using existing customer ${customer.id}`);
-//             } else {
-//               // If it's not attached to any customer, create a new one
-//               customer = await stripe.customers.create({
-//                 email: donorDetails.email,
-//                 name: donorDetails.name,
-//                 phone: donorDetails.phone,
-//               });
-
-//               console.log(`Created new customer ${customer.id}`);
-
-//               // Then attach the payment method to the customer
-//               await stripe.paymentMethods.attach(stripePaymentMethodId, {
-//                 customer: customer.id,
-//               });
-
-//               console.log(
-//                 `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
-//               );
-//             }
-
-//             // Set it as the default payment method
-//             await stripe.customers.update(customer.id, {
-//               invoice_settings: {
-//                 default_payment_method: stripePaymentMethodId,
-//               },
-//             });
-
-//             console.log(
-//               `Set payment method ${stripePaymentMethodId} as default for customer ${customer.id}`
-//             );
-//           } catch (stripeError) {
-//             console.error("Error handling payment method:", stripeError);
-
-//             // Special handling for the "already attached" error
-//             if (
-//               stripeError.code === "payment_method_in_use" ||
-//               stripeError.message.includes("already been attached")
-//             ) {
-//               try {
-//                 console.log("Handling 'already attached' error");
-
-//                 // Try to find the customer by looking up the payment method
-//                 const paymentMethod = await stripe.paymentMethods.retrieve(
-//                   stripePaymentMethodId
-//                 );
-
-//                 if (paymentMethod.customer) {
-//                   // Use the customer this payment method is already attached to
-//                   customer = await stripe.customers.retrieve(
-//                     paymentMethod.customer
-//                   );
-//                   console.log(
-//                     `Using existing customer ${customer.id} that payment method is attached to`
-//                   );
-//                 } else {
-//                   // This shouldn't happen if we got an "already attached" error, but just in case
-//                   throw new Error(
-//                     "Payment method is reported as already attached but no customer found"
-//                   );
-//                 }
-//               } catch (secondError) {
-//                 console.error("Error in special handling:", secondError);
-//                 throw secondError;
-//               }
-//             } else {
-//               // For other types of errors, just pass them along
-//               throw stripeError;
-//             }
-//           }
-
-//           // Convert frequency to Stripe interval
-//           let interval;
-//           switch (recurringDetails.frequency) {
-//             case "daily": // Note: Stripe doesn't support daily, you might need a custom solution
-//               interval = "day";
-//               break;
-//             case "weekly":
-//               interval = "week";
-//               break;
-//             case "monthly":
-//               interval = "month";
-//               break;
-//             case "yearly":
-//               interval = "year";
-//               break;
-//             default:
-//               interval = "month";
-//           }
-
-//           // First create the product
-//           const product = await stripe.products.create({
-//             name: "Recurring Donation",
-//             metadata: {
-//               donationId: savedOrder.donationId,
-//             },
-//           });
-
-//           console.log(`Created product for recurring donation: ${product.id}`);
-
-//           // Create the subscription with the product ID - MODIFIED to ensure immediate completion
-//           const subscription = await stripe.subscriptions.create({
-//             customer: customer.id,
-//             items: [
-//               {
-//                 price_data: {
-//                   currency: "aud",
-//                   product: product.id,
-//                   unit_amount: Math.round(recurringDetails.amount * 100),
-//                   recurring: {
-//                     interval: interval,
-//                   },
-//                 },
-//               },
-//             ],
-//             // Removed payment_behavior: "default_incomplete"
-//             payment_settings: {
-//               save_default_payment_method: "on_subscription",
-//               payment_method_types: ["card"],
-//             },
-//             default_payment_method: stripePaymentMethodId, // Explicitly set default payment method
-//             expand: ["latest_invoice.payment_intent"],
-//           });
-
-//           console.log(
-//             `Created subscription: ${subscription.id} for customer ${customer.id}, status: ${subscription.status}`
-//           );
-
-//           // Update order with subscription details
-//           savedOrder.transactionDetails = {
-//             stripeCustomerId: customer.id,
-//             stripeSubscriptionId: subscription.id,
-//             stripeStatus: subscription.status,
-//             clientSecret:
-//               subscription.latest_invoice.payment_intent?.client_secret,
-//           };
-
-//           // Set payment status based on subscription status
-//           if (subscription.status === "active") {
-//             savedOrder.paymentStatus = "completed";
-//             // Send receipt email for completed payments
-//             try {
-//               await sendReceiptEmail(savedOrder);
-//             } catch (emailError) {
-//               console.error("Failed to send receipt email:", emailError);
-//               // Don't fail the order if email fails
-//             }
-//           } else if (subscription.status === "incomplete") {
-//             savedOrder.paymentStatus = "requires_action";
-//           }
-
-//           await savedOrder.save();
-//         } else if (paymentType === "installments") {
-//           // IMPROVED PAYMENT METHOD HANDLING
-//           let customer;
-
-//           try {
-//             // First, try to retrieve the payment method
-//             const paymentMethod = await stripe.paymentMethods.retrieve(
-//               stripePaymentMethodId
-//             );
-
-//             // If it's already attached to a customer
-//             if (paymentMethod.customer) {
-//               console.log(
-//                 `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethod.customer}`
-//               );
-
-//               // Use that customer
-//               customer = await stripe.customers.retrieve(
-//                 paymentMethod.customer
-//               );
-//               console.log(`Using existing customer ${customer.id}`);
-//             } else {
-//               // If it's not attached to any customer, create a new one
-//               customer = await stripe.customers.create({
-//                 email: donorDetails.email,
-//                 name: donorDetails.name,
-//                 phone: donorDetails.phone,
-//               });
-
-//               console.log(`Created new customer ${customer.id}`);
-
-//               // Then attach the payment method to the customer
-//               await stripe.paymentMethods.attach(stripePaymentMethodId, {
-//                 customer: customer.id,
-//               });
-
-//               console.log(
-//                 `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
-//               );
-//             }
-
-//             // Set it as the default payment method
-//             await stripe.customers.update(customer.id, {
-//               invoice_settings: {
-//                 default_payment_method: stripePaymentMethodId,
-//               },
-//             });
-
-//             console.log(
-//               `Set payment method ${stripePaymentMethodId} as default for customer ${customer.id}`
-//             );
-//           } catch (stripeError) {
-//             console.error("Error handling payment method:", stripeError);
-
-//             // Special handling for the "already attached" error
-//             if (
-//               stripeError.code === "payment_method_in_use" ||
-//               stripeError.message.includes("already been attached")
-//             ) {
-//               try {
-//                 console.log("Handling 'already attached' error");
-
-//                 // Try to find the customer by looking up the payment method
-//                 const paymentMethod = await stripe.paymentMethods.retrieve(
-//                   stripePaymentMethodId
-//                 );
-
-//                 if (paymentMethod.customer) {
-//                   // Use the customer this payment method is already attached to
-//                   customer = await stripe.customers.retrieve(
-//                     paymentMethod.customer
-//                   );
-//                   console.log(
-//                     `Using existing customer ${customer.id} that payment method is attached to`
-//                   );
-//                 } else {
-//                   // This shouldn't happen if we got an "already attached" error, but just in case
-//                   throw new Error(
-//                     "Payment method is reported as already attached but no customer found"
-//                   );
-//                 }
-//               } catch (secondError) {
-//                 console.error("Error in special handling:", secondError);
-//                 throw secondError;
-//               }
-//             } else {
-//               // For other types of errors, just pass them along
-//               throw stripeError;
-//             }
-//           }
-
-//           // Process first installment - MODIFIED to match recurring improvement approach
-//           const paymentIntent = await stripe.paymentIntents.create({
-//             amount: Math.round(installmentDetails.installmentAmount * 100),
-//             currency: "aud",
-//             customer: customer.id,
-//             payment_method: stripePaymentMethodId,
-//             automatic_payment_methods: {
-//               enabled: true,
-//               allow_redirects: "never",
-//             },
-//             confirm: true,
-//             off_session: true, // Added to attempt immediate processing
-//             description: `Installment 1/${installmentDetails.numberOfInstallments} for Donation ${savedOrder.donationId}`,
-//             metadata: {
-//               donationId: savedOrder.donationId,
-//               orderId: savedOrder._id.toString(),
-//               installment: 1,
-//               totalInstallments: installmentDetails.numberOfInstallments,
-//             },
-//           });
-
-//           console.log(`Created first installment payment: ${paymentIntent.id}`);
-
-//           // Store customer ID for future installments
-//           savedOrder.transactionDetails = {
-//             stripeCustomerId: customer.id,
-//             stripePaymentIntentId: paymentIntent.id,
-//             stripeStatus: paymentIntent.status,
-//             clientSecret: paymentIntent.client_secret,
-//           };
-
-//           // Update installment details
-//           if (savedOrder.installmentDetails) {
-//             savedOrder.installmentDetails.installmentsPaid = 1;
-
-//             // Calculate next installment date (30 days from now)
-//             const paymentIntervalDays = 30; // Monthly interval
-//             savedOrder.installmentDetails.nextInstallmentDate = new Date(
-//               Date.now() + paymentIntervalDays * 24 * 60 * 60 * 1000
-//             );
-
-//             // Add to payment history
-//             savedOrder.installmentDetails.installmentHistory.push({
-//               installmentNumber: 1,
-//               amount: installmentDetails.installmentAmount,
-//               date: new Date(),
-//               status:
-//                 paymentIntent.status === "succeeded"
-//                   ? "completed"
-//                   : "processing",
-//               transactionId: paymentIntent.id,
-//             });
-//           }
-
-//           // Set payment status
-//           if (paymentIntent.status === "succeeded") {
-//             // Send receipt email for completed payments
-//             try {
-//               await sendReceiptEmail(savedOrder);
-//             } catch (emailError) {
-//               console.error("Failed to send receipt email:", emailError);
-//               // Don't fail the order if email fails
-//             }
-//             // For installments, we keep the order in "processing" until all installments are paid
-//             savedOrder.paymentStatus = "processing";
-//           } else if (paymentIntent.status === "requires_action") {
-//             savedOrder.paymentStatus = "requires_action";
-//           }
-
-//           await savedOrder.save();
-//         }
-//       } catch (stripeError) {
-//         console.error("Stripe payment error:", stripeError);
-
-//         // Update order status to failed
-//         savedOrder.paymentStatus = "failed";
-//         savedOrder.transactionDetails = {
-//           error: stripeError.message,
-//         };
-//         await savedOrder.save();
-
-//         return res.status(400).json({
-//           status: "Error",
-//           message: `Payment processing failed: ${stripeError.message}`,
-//           order: {
-//             _id: savedOrder._id,
-//             donationId: savedOrder.donationId,
-//           },
-//         });
-//       }
-//     }
-
-//     if (paymentMethod === "bank") {
-//       try {
-//         await sendReceiptEmail(savedOrder);
-//         console.log(
-//           `Bank transfer receipt sent for order: ${savedOrder.donationId}`
-//         );
-//       } catch (emailError) {
-//         console.error(
-//           "Failed to send bank transfer receipt email:",
-//           emailError
-//         );
-//         // Don't fail the order if email fails
-//       }
-//     }
-
-//     // Send response
-//     res.status(201).json({
-//       status: "Success",
-//       message: "Order created successfully",
-//       order: {
-//         _id: savedOrder._id,
-//         donationId: savedOrder.donationId,
-//         totalAmount: savedOrder.totalAmount,
-//         paymentStatus: savedOrder.paymentStatus,
-//         recurringDetails: orderRecurringDetails,
-//         installmentDetails: orderInstallmentDetails,
-//         transactionDetails: savedOrder.transactionDetails,
-//         paymentInstructions:
-//           paymentMethod === "bank"
-//             ? {
-//                 bankName: "Westpac",
-//                 bsb: "032075",
-//                 accountNumber: "841783",
-//                 reference: savedOrder.donationId,
-//               }
-//             : null,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("Order creation error:", error);
-//     res.status(500).json({
-//       status: "Error",
-//       message: "Failed to create order",
-//       error: error.message,
-//     });
-//   }
-// };
-
+const calculateBillingAnchor = (billingDay) => {
+  const today = new Date();
+  // Normalize billing day to valid range for month
+  const currentMonth = today.getMonth();
+  const currentYear = today.getFullYear();
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  const normalizedBillingDay = Math.min(billingDay, daysInMonth);
+
+  // Create date for this month's billing day
+  let billingDate = new Date(currentYear, currentMonth, normalizedBillingDay);
+
+  // If the billing day has already passed this month, move to next month
+  if (today > billingDate) {
+    billingDate.setMonth(billingDate.getMonth() + 1);
+    // Adjust for different month lengths
+    const nextMonthDays = new Date(
+      billingDate.getFullYear(),
+      billingDate.getMonth() + 1,
+      0
+    ).getDate();
+    billingDate.setDate(Math.min(normalizedBillingDay, nextMonthDays));
+  }
+
+  return Math.floor(billingDate.getTime() / 1000);
+};
 
 exports.createOrder = async (req, res) => {
   try {
@@ -909,14 +235,10 @@ exports.createOrder = async (req, res) => {
 
     // Validate recurring payment details if applicable
     if (paymentType === "recurring") {
-      if (
-        !recurringDetails ||
-        !recurringDetails.frequency ||
-        !recurringDetails.amount
-      ) {
+      if (!recurringDetails || !recurringDetails.frequency) {
         return res.status(400).json({
           status: "Error",
-          message: "Recurring payment requires frequency and amount",
+          message: "Recurring payment requires frequency",
         });
       }
       const validFrequencies = ["daily", "weekly", "monthly", "yearly"];
@@ -975,21 +297,27 @@ exports.createOrder = async (req, res) => {
       onBehalfOf: item.onBehalfOf || null,
     }));
 
+    // Capture the current day for recurring billing
+    const today = new Date();
+    const billingDay = today.getDate();
+
     // Build recurring details only if paymentType is "recurring"
     let orderRecurringDetails;
     if (paymentType === "recurring") {
       orderRecurringDetails = {
         frequency: recurringDetails.frequency,
-        amount: recurringDetails.amount,
+        amount: totalAmount, // Use the full donation amount instead of partial
         startDate: new Date(),
         endDate: recurringDetails.endDate
           ? new Date(recurringDetails.endDate)
-          : null, // include end date if provided
+          : null,
         status: "active",
         nextPaymentDate: calculateNextPaymentDate(
           new Date(),
-          recurringDetails.frequency
+          recurringDetails.frequency,
+          billingDay // Pass billing day to function
         ),
+        billingDay: billingDay, // Store the billing day
         totalPayments: 0,
         paymentHistory: [],
       };
@@ -1039,7 +367,8 @@ exports.createOrder = async (req, res) => {
       paymentStatus: paymentMethod === "bank" ? "pending" : "processing",
       totalAmount,
       transactionDetails: {},
-      recurringDetails: paymentType === "recurring" ? orderRecurringDetails : undefined,
+      recurringDetails:
+        paymentType === "recurring" ? orderRecurringDetails : undefined,
       installmentDetails:
         paymentType === "installments" ? orderInstallmentDetails : undefined,
     };
@@ -1060,9 +389,7 @@ exports.createOrder = async (req, res) => {
           error.keyPattern &&
           error.keyPattern.donationId
         ) {
-          order.donationId = `D${Date.now()}${Math.floor(
-            Math.random() * 10000
-          )
+          order.donationId = `D${Date.now()}${Math.floor(Math.random() * 10000)
             .toString()
             .padStart(4, "0")}`;
           retries--;
@@ -1095,7 +422,10 @@ exports.createOrder = async (req, res) => {
           );
         }
       } catch (userCreateError) {
-        console.error("Failed to create user account for donor:", userCreateError);
+        console.error(
+          "Failed to create user account for donor:",
+          userCreateError
+        );
       }
     }
 
@@ -1139,7 +469,7 @@ exports.createOrder = async (req, res) => {
           }
 
           await savedOrder.save();
-        }  else if (paymentType === "recurring") {
+        } else if (paymentType === "recurring") {
           // Recurring payment processing
           let customer;
           try {
@@ -1150,7 +480,9 @@ exports.createOrder = async (req, res) => {
               console.log(
                 `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethodObj.customer}`
               );
-              customer = await stripe.customers.retrieve(paymentMethodObj.customer);
+              customer = await stripe.customers.retrieve(
+                paymentMethodObj.customer
+              );
               console.log(`Using existing customer ${customer.id}`);
             } else {
               customer = await stripe.customers.create({
@@ -1166,9 +498,11 @@ exports.createOrder = async (req, res) => {
                 `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
               );
             }
-        
+
             await stripe.customers.update(customer.id, {
-              invoice_settings: { default_payment_method: stripePaymentMethodId },
+              invoice_settings: {
+                default_payment_method: stripePaymentMethodId,
+              },
             });
             console.log(
               `Set payment method ${stripePaymentMethodId} as default for customer ${customer.id}`
@@ -1204,7 +538,7 @@ exports.createOrder = async (req, res) => {
               throw stripeError;
             }
           }
-        
+
           let interval;
           switch (recurringDetails.frequency) {
             case "daily":
@@ -1222,14 +556,14 @@ exports.createOrder = async (req, res) => {
             default:
               interval = "month";
           }
-        
+
           const product = await stripe.products.create({
             name: "Recurring Donation",
             metadata: { donationId: savedOrder.donationId },
           });
           console.log(`Created product for recurring donation: ${product.id}`);
-        
-          // Build the subscription data object
+
+          // Create subscription with billing cycle anchor for consistent monthly charging
           let subscriptionData = {
             customer: customer.id,
             items: [
@@ -1237,8 +571,11 @@ exports.createOrder = async (req, res) => {
                 price_data: {
                   currency: "aud",
                   product: product.id,
-                  unit_amount: Math.round(recurringDetails.amount * 100),
-                  recurring: { interval: interval },
+                  unit_amount: Math.round(totalAmount * 100), // Use the FULL totalAmount
+                  recurring: {
+                    interval: interval,
+                    interval_count: 1,
+                  },
                 },
               },
             ],
@@ -1248,43 +585,106 @@ exports.createOrder = async (req, res) => {
             },
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
+            billing_cycle_anchor: Math.floor(today.getTime() / 1000), // Start from today
+            proration_behavior: "none", // Don't prorate when making changes
           };
-        
+
           if (recurringDetails.endDate) {
             const cancelAtTimestamp = Math.floor(
               new Date(recurringDetails.endDate).getTime() / 1000
             );
             subscriptionData.cancel_at = cancelAtTimestamp;
-            console.log(`Subscription will cancel at ${recurringDetails.endDate}`);
+            console.log(
+              `Subscription will cancel at ${recurringDetails.endDate}`
+            );
           }
-        
-          const subscription = await stripe.subscriptions.create(subscriptionData);
+
+          const subscription = await stripe.subscriptions.create({
+            customer: customer.id,
+            items: [
+              {
+                price_data: {
+                  currency: "aud",
+                  product: product.id,
+                  unit_amount: Math.round(totalAmount * 100),
+                  recurring: {
+                    interval: interval,
+                    interval_count: 1,
+                    // Remove the usage_type that's causing the error
+                  },
+                },
+              },
+            ],
+            payment_settings: {
+              save_default_payment_method: "on_subscription",
+              payment_method_types: ["card"],
+            },
+            default_payment_method: stripePaymentMethodId,
+            expand: ["latest_invoice.payment_intent"],
+            // Use the billing day to calculate the proper anchor date
+            billing_cycle_anchor: calculateBillingAnchor(billingDay),
+            proration_behavior: "none",
+            // Add metadata to track billing day
+            ...(recurringDetails.endDate
+              ? {
+                  cancel_at: Math.floor(
+                    new Date(recurringDetails.endDate).getTime() / 1000
+                  ),
+                }
+              : {}),
+            metadata: {
+              billingDay: billingDay.toString(),
+              donationId: savedOrder.donationId,
+            },
+          });
           console.log(
             `Created subscription: ${subscription.id} for customer ${customer.id}, status: ${subscription.status}`
           );
-        
+
           savedOrder.transactionDetails = {
             stripeCustomerId: customer.id,
             stripeSubscriptionId: subscription.id,
             stripeStatus: subscription.status,
-            clientSecret: subscription.latest_invoice.payment_intent?.client_secret,
+            clientSecret:
+              subscription.latest_invoice?.payment_intent?.client_secret ||
+              null,
           };
-        
+
           if (subscription.status === "active") {
-            savedOrder.paymentStatus = "completed";
-            try {
-              await sendReceiptEmail(savedOrder);
-            } catch (emailError) {
-              console.error("Failed to send receipt email:", emailError);
+            savedOrder.paymentStatus = "active";
+
+            // Check if the first invoice was paid
+            if (
+              subscription.latest_invoice &&
+              subscription.latest_invoice.payment_intent &&
+              subscription.latest_invoice.payment_intent.status === "succeeded"
+            ) {
+              // Count this as the first payment
+              savedOrder.recurringDetails.totalPayments = 1;
+
+              // Add first payment to history
+              savedOrder.recurringDetails.paymentHistory = [
+                {
+                  date: new Date(),
+                  amount: totalAmount, // Use the full amount
+                  invoiceId: subscription.latest_invoice.id,
+                  status: "succeeded",
+                },
+              ];
+
+              try {
+                await sendReceiptEmail(savedOrder);
+              } catch (emailError) {
+                console.error("Failed to send receipt email:", emailError);
+              }
             }
           } else {
             // For any non-active subscription (e.g. pending/incomplete), leave the status as pending.
             savedOrder.paymentStatus = "pending";
           }
-        
+
           await savedOrder.save();
-        }
-        else if (paymentType === "installments") {
+        } else if (paymentType === "installments") {
           // Installment processing
           let customer;
           try {
@@ -1295,7 +695,9 @@ exports.createOrder = async (req, res) => {
               console.log(
                 `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethodObj.customer}`
               );
-              customer = await stripe.customers.retrieve(paymentMethodObj.customer);
+              customer = await stripe.customers.retrieve(
+                paymentMethodObj.customer
+              );
               console.log(`Using existing customer ${customer.id}`);
             } else {
               customer = await stripe.customers.create({
@@ -1313,7 +715,9 @@ exports.createOrder = async (req, res) => {
             }
 
             await stripe.customers.update(customer.id, {
-              invoice_settings: { default_payment_method: stripePaymentMethodId },
+              invoice_settings: {
+                default_payment_method: stripePaymentMethodId,
+              },
             });
             console.log(
               `Set payment method ${stripePaymentMethodId} as default for customer ${customer.id}`
@@ -1390,7 +794,9 @@ exports.createOrder = async (req, res) => {
               amount: installmentDetails.installmentAmount,
               date: new Date(),
               status:
-                paymentIntent.status === "succeeded" ? "completed" : "processing",
+                paymentIntent.status === "succeeded"
+                  ? "completed"
+                  : "processing",
               transactionId: paymentIntent.id,
             });
           }
@@ -1401,7 +807,7 @@ exports.createOrder = async (req, res) => {
             } catch (emailError) {
               console.error("Failed to send receipt email:", emailError);
             }
-            savedOrder.paymentStatus = "processing";
+            savedOrder.paymentStatus = "active";
           } else if (paymentIntent.status === "requires_action") {
             savedOrder.paymentStatus = "failed";
           }
@@ -1430,7 +836,10 @@ exports.createOrder = async (req, res) => {
             `Bank transfer receipt sent for order: ${savedOrder.donationId}`
           );
         } catch (emailError) {
-          console.error("Failed to send bank transfer receipt email:", emailError);
+          console.error(
+            "Failed to send bank transfer receipt email:",
+            emailError
+          );
         }
       } else {
         console.log(
@@ -1447,7 +856,8 @@ exports.createOrder = async (req, res) => {
         donationId: savedOrder.donationId,
         totalAmount: savedOrder.totalAmount,
         paymentStatus: savedOrder.paymentStatus,
-        recurringDetails: paymentType === "recurring" ? orderRecurringDetails : undefined,
+        recurringDetails:
+          paymentType === "recurring" ? orderRecurringDetails : undefined,
         installmentDetails:
           paymentType === "installments" ? orderInstallmentDetails : undefined,
         transactionDetails: savedOrder.transactionDetails,
@@ -1471,8 +881,6 @@ exports.createOrder = async (req, res) => {
     });
   }
 };
-
-
 
 exports.getOrders = async (req, res) => {
   try {
@@ -1566,29 +974,110 @@ exports.updateOrderStatus = async (req, res) => {
 exports.getOrderStats = async (req, res) => {
   try {
     const userId = req.user._id;
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
     console.log("Getting order stats for user:", req.user);
 
     // Get all orders for the user
     const orders = await Order.find({ user: userId });
 
-    // Calculate total donated amount
-    const totalDonated = orders.reduce(
-      (sum, order) => sum + order.totalAmount,
-      0
+    // Calculate total donated amount (including all installments and recurring payments)
+    let totalDonated = 0;
+
+    // Use Promise.all to allow parallel processing of Stripe API calls
+    await Promise.all(
+      orders.map(async (order) => {
+        // For one-time payments, use the total amount
+        if (order.paymentType === "single") {
+          totalDonated += order.totalAmount;
+        }
+        // For installments, calculate based on installments actually paid
+        else if (
+          order.paymentType === "installments" &&
+          order.installmentDetails
+        ) {
+          const paidInstallments =
+            order.installmentDetails.installmentsPaid || 0;
+          totalDonated +=
+            paidInstallments * order.installmentDetails.installmentAmount;
+        }
+        // For recurring donations, get accurate payment history from Stripe if possible
+        else if (order.paymentType === "recurring") {
+          try {
+            // If we have a Stripe subscription ID and it was a card payment
+            if (
+              order.transactionDetails?.stripeSubscriptionId &&
+              (order.paymentMethod === "visa" ||
+                order.paymentMethod === "mastercard")
+            ) {
+              // Get all invoices for this subscription from Stripe
+              const invoices = await stripe.invoices.list({
+                subscription: order.transactionDetails.stripeSubscriptionId,
+                status: "paid",
+                limit: 100, // Adjust as needed
+              });
+
+              // Sum up all paid invoices
+              const paidAmount = invoices.data.reduce(
+                (sum, invoice) => sum + invoice.amount_paid / 100,
+                0
+              ); // Convert from cents
+
+              totalDonated += paidAmount;
+            }
+            // If no Stripe subscription ID or not using card, fall back to local data
+            else if (order.recurringDetails) {
+              // If payment history exists, sum all successful payments
+              if (
+                order.recurringDetails.paymentHistory &&
+                order.recurringDetails.paymentHistory.length > 0
+              ) {
+                const successfulPayments = order.recurringDetails.paymentHistory
+                  .filter((payment) => payment.status === "succeeded")
+                  .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+
+                totalDonated += successfulPayments;
+              } else if (
+                order.paymentStatus === "active" ||
+                order.paymentStatus === "completed" ||
+                order.paymentStatus === "cancelled"
+              ) {
+                // If no payment history but subscription was active at some point, count at least one payment
+                totalDonated += order.recurringDetails.amount;
+              }
+            }
+          } catch (stripeError) {
+            console.error("Error fetching Stripe payment data:", stripeError);
+            // Fall back to local payment history on error
+            if (
+              order.recurringDetails &&
+              order.recurringDetails.paymentHistory
+            ) {
+              const successfulPayments = order.recurringDetails.paymentHistory
+                .filter((payment) => payment.status === "succeeded")
+                .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+
+              totalDonated += successfulPayments;
+            } else if (order.paymentStatus !== "failed") {
+              // If no payment history but not failed, count at least one payment
+              totalDonated += order.recurringDetails?.amount || 0;
+            }
+          }
+        }
+      })
     );
 
-    // Calculate recurring donations
+    // Rest of your existing code for calculating other stats
     const recurringOrders = orders.filter(
       (order) =>
         order.paymentType === "recurring" ||
         order.paymentType === "installments"
     );
 
-    // Calculate active recurring (not failed or completed)
+    // Calculate active recurring (not failed or completed or cancelled)
     const activeRecurring = recurringOrders.filter(
       (order) =>
-        order.paymentStatus !== "failed" && order.paymentStatus !== "completed"
+        order.paymentStatus === "active" || order.paymentStatus === "pending"
     ).length;
 
     // Count one-time donations
@@ -1610,8 +1099,11 @@ exports.getOrderStats = async (req, res) => {
         .length,
       failedOrders: orders.filter((order) => order.paymentStatus === "failed")
         .length,
+      cancelledOrders: orders.filter(
+        (order) => order.paymentStatus === "cancelled"
+      ).length,
       // Monthly stats
-      monthlyStats: getMonthlyStats(orders),
+      monthlyStats: await getMonthlyStats(orders, stripe),
     };
 
     res.json({
@@ -1629,17 +1121,19 @@ exports.getOrderStats = async (req, res) => {
 };
 
 // Helper function to calculate monthly stats
-const getMonthlyStats = (orders) => {
+// Helper function to calculate monthly stats
+const getMonthlyStats = async (orders, stripe) => {
   const monthlyData = {};
 
-  orders.forEach((order) => {
-    const date = new Date(order.createdAt);
-    const monthYear = `${date.getFullYear()}-${String(
-      date.getMonth() + 1
+  // First, process all orders
+  for (const order of orders) {
+    const initialDate = new Date(order.createdAt);
+    const initialMonthYear = `${initialDate.getFullYear()}-${String(
+      initialDate.getMonth() + 1
     ).padStart(2, "0")}`;
 
-    if (!monthlyData[monthYear]) {
-      monthlyData[monthYear] = {
+    if (!monthlyData[initialMonthYear]) {
+      monthlyData[initialMonthYear] = {
         total: 0,
         count: 0,
         recurring: 0,
@@ -1647,15 +1141,132 @@ const getMonthlyStats = (orders) => {
       };
     }
 
-    monthlyData[monthYear].total += order.totalAmount;
-    monthlyData[monthYear].count += 1;
+    // Always count the order itself in the creation month
+    monthlyData[initialMonthYear].count += 1;
 
+    // For one-time payments, add the full amount to the creation month
     if (order.paymentType === "single") {
-      monthlyData[monthYear].oneTime += 1;
-    } else {
-      monthlyData[monthYear].recurring += 1;
+      monthlyData[initialMonthYear].total += order.totalAmount;
+      monthlyData[initialMonthYear].oneTime += 1;
     }
-  });
+    // For recurring/installments, mark as recurring in the creation month
+    else {
+      monthlyData[initialMonthYear].recurring += 1;
+
+      // Handle recurring payments by fetching Stripe data if possible
+      if (
+        order.paymentType === "recurring" &&
+        order.transactionDetails?.stripeSubscriptionId &&
+        (order.paymentMethod === "visa" || order.paymentMethod === "mastercard")
+      ) {
+        try {
+          // Get all paid invoices for this subscription
+          const invoices = await stripe.invoices.list({
+            subscription: order.transactionDetails.stripeSubscriptionId,
+            status: "paid",
+            limit: 100,
+          });
+
+          // Process each invoice
+          for (const invoice of invoices.data) {
+            const paymentDate = new Date(
+              invoice.status_transitions.paid_at * 1000
+            );
+            const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
+              paymentDate.getMonth() + 1
+            ).padStart(2, "0")}`;
+
+            if (!monthlyData[paymentMonthYear]) {
+              monthlyData[paymentMonthYear] = {
+                total: 0,
+                count: 0,
+                recurring: 0,
+                oneTime: 0,
+              };
+            }
+
+            monthlyData[paymentMonthYear].total += invoice.amount_paid / 100; // Convert from cents
+          }
+        } catch (stripeError) {
+          console.error("Error fetching Stripe invoice data:", stripeError);
+
+          // Fall back to local data (first payment only)
+          monthlyData[initialMonthYear].total +=
+            order.recurringDetails?.amount || 0;
+        }
+      }
+      // Handle installment payments
+      else if (
+        order.paymentType === "installments" &&
+        order.installmentDetails
+      ) {
+        // Process all installment payments based on their dates
+        if (
+          order.installmentDetails.installmentHistory &&
+          order.installmentDetails.installmentHistory.length > 0
+        ) {
+          order.installmentDetails.installmentHistory
+            .filter((h) => h.status === "completed")
+            .forEach((installment) => {
+              // Use installment date if available, otherwise use order creation date
+              const paymentDate = installment.date
+                ? new Date(installment.date)
+                : initialDate;
+              const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
+                paymentDate.getMonth() + 1
+              ).padStart(2, "0")}`;
+
+              if (!monthlyData[paymentMonthYear]) {
+                monthlyData[paymentMonthYear] = {
+                  total: 0,
+                  count: 0,
+                  recurring: 0,
+                  oneTime: 0,
+                };
+              }
+
+              monthlyData[paymentMonthYear].total += installment.amount;
+            });
+        } else {
+          // If no installment history, just add first installment to creation month
+          monthlyData[initialMonthYear].total +=
+            order.installmentDetails.installmentAmount;
+        }
+      }
+      // Fall back for recurring payments without Stripe ID
+      else if (order.paymentType === "recurring" && order.recurringDetails) {
+        if (
+          order.recurringDetails.paymentHistory &&
+          order.recurringDetails.paymentHistory.length > 0
+        ) {
+          order.recurringDetails.paymentHistory
+            .filter((p) => p.status === "succeeded")
+            .forEach((payment) => {
+              const paymentDate = payment.date
+                ? new Date(payment.date)
+                : initialDate;
+              const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
+                paymentDate.getMonth() + 1
+              ).padStart(2, "0")}`;
+
+              if (!monthlyData[paymentMonthYear]) {
+                monthlyData[paymentMonthYear] = {
+                  total: 0,
+                  count: 0,
+                  recurring: 0,
+                  oneTime: 0,
+                };
+              }
+
+              monthlyData[paymentMonthYear].total += payment.amount;
+            });
+        } else {
+          // If no payment history, just add first payment to creation month
+          monthlyData[initialMonthYear].total += order.recurringDetails.amount;
+        }
+      }
+    }
+  }
 
   // Convert to array and sort by date
   return Object.entries(monthlyData)
@@ -1666,9 +1277,9 @@ const getMonthlyStats = (orders) => {
     .sort((a, b) => b.month.localeCompare(a.month));
 };
 
-// Helper function to calculate next payment date
-const calculateNextPaymentDate = (startDate, frequency) => {
+const calculateNextPaymentDate = (startDate, frequency, billingDay = null) => {
   const nextDate = new Date(startDate);
+
   switch (frequency) {
     case "daily":
       nextDate.setDate(nextDate.getDate() + 1);
@@ -1677,7 +1288,19 @@ const calculateNextPaymentDate = (startDate, frequency) => {
       nextDate.setDate(nextDate.getDate() + 7);
       break;
     case "monthly":
+      // Move to next month
       nextDate.setMonth(nextDate.getMonth() + 1);
+
+      // If billing day is specified, use that date instead of current day
+      if (billingDay) {
+        // Get days in the next month to handle edge cases (31st, 30th, etc.)
+        const daysInMonth = new Date(
+          nextDate.getFullYear(),
+          nextDate.getMonth() + 1,
+          0
+        ).getDate();
+        nextDate.setDate(Math.min(billingDay, daysInMonth));
+      }
       break;
     case "yearly":
       nextDate.setFullYear(nextDate.getFullYear() + 1);
@@ -1687,7 +1310,6 @@ const calculateNextPaymentDate = (startDate, frequency) => {
   }
   return nextDate;
 };
-
 /**
  * Process the next installment payment for an order
  * @param {string} orderId - The order ID to process the next installment for
@@ -1701,12 +1323,22 @@ exports.processNextInstallment = async (orderId) => {
       return;
     }
 
+    // Log the order transaction details for debugging
+    console.log(
+      `Processing order ${orderId} with transaction details:`,
+      JSON.stringify(order.transactionDetails || {}, null, 2)
+    );
+    console.log(
+      `Payment type: ${order.paymentType}, Payment method: ${order.paymentMethod}`
+    );
+
     // Ensure this is an active installment order with remaining installments.
     if (
       order.paymentType !== "installments" ||
       !order.installmentDetails ||
       order.installmentDetails.status !== "active" ||
-      order.installmentDetails.installmentsPaid >= order.installmentDetails.numberOfInstallments
+      order.installmentDetails.installmentsPaid >=
+        order.installmentDetails.numberOfInstallments
     ) {
       console.log(`No installment to process for order: ${orderId}`);
       return;
@@ -1725,19 +1357,96 @@ exports.processNextInstallment = async (orderId) => {
       `Processing installment ${installmentNumber}/${order.installmentDetails.numberOfInstallments} for order: ${orderId}`
     );
 
+    // Check payment information and try to recover if missing
+    if (
+      !order.transactionDetails ||
+      !order.transactionDetails.stripeCustomerId ||
+      !order.transactionDetails.stripePaymentMethodId
+    ) {
+      console.error(`Missing payment method information for order: ${orderId}`);
+
+      // If we have a customer ID but no payment method, try to get default payment method
+      if (
+        order.transactionDetails &&
+        order.transactionDetails.stripeCustomerId
+      ) {
+        try {
+          const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+          const customer = await stripe.customers.retrieve(
+            order.transactionDetails.stripeCustomerId,
+            { expand: ["default_source"] }
+          );
+
+          if (customer.default_source) {
+            console.log(
+              `Found default payment source for customer: ${customer.id}`
+            );
+            order.transactionDetails.stripePaymentMethodId =
+              customer.default_source;
+          } else if (
+            customer.invoice_settings &&
+            customer.invoice_settings.default_payment_method
+          ) {
+            console.log(
+              `Found default payment method in invoice settings: ${customer.invoice_settings.default_payment_method}`
+            );
+            order.transactionDetails.stripePaymentMethodId =
+              customer.invoice_settings.default_payment_method;
+          } else {
+            // Try to get the latest payment method
+            const paymentMethods = await stripe.paymentMethods.list({
+              customer: customer.id,
+              type: "card",
+              limit: 1,
+            });
+
+            if (paymentMethods.data.length > 0) {
+              console.log(
+                `Found payment method from list: ${paymentMethods.data[0].id}`
+              );
+              order.transactionDetails.stripePaymentMethodId =
+                paymentMethods.data[0].id;
+            }
+          }
+
+          // If we recovered a payment method, save it to the order
+          if (order.transactionDetails.stripePaymentMethodId) {
+            await order.save();
+            console.log(
+              `Recovered and saved payment method: ${order.transactionDetails.stripePaymentMethodId}`
+            );
+          }
+        } catch (recoveryError) {
+          console.error(
+            `Error recovering payment method: ${recoveryError.message}`
+          );
+        }
+      }
+
+      // If still missing required info, we can't proceed
+      if (
+        !order.transactionDetails ||
+        !order.transactionDetails.stripeCustomerId ||
+        !order.transactionDetails.stripePaymentMethodId
+      ) {
+        throw new Error(
+          "Critical payment information missing. Cannot process installment."
+        );
+      }
+    }
+
     // Process payment with Stripe.
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    // Now create and confirm the payment intent with explicit payment method
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(order.installmentDetails.installmentAmount * 100),
       currency: "aud",
       customer: order.transactionDetails.stripeCustomerId,
-      payment_method: order.transactionDetails.stripePaymentMethodId, // ensure this is stored from the initial installment processing
-      automatic_payment_methods: {
-        enabled: true,
-        allow_redirects: "never",
-      },
-      confirm: true,
+      payment_method: order.transactionDetails.stripePaymentMethodId,
       off_session: true,
+      confirm: true,
+      payment_method_types: ["card"],
       description: `Installment ${installmentNumber}/${order.installmentDetails.numberOfInstallments} for Donation ${order.donationId}`,
       metadata: {
         donationId: order.donationId,
@@ -1752,8 +1461,10 @@ exports.processNextInstallment = async (orderId) => {
 
     // Calculate and store the next installment date if there are more installments remaining.
     if (installmentNumber < order.installmentDetails.numberOfInstallments) {
+      const paymentIntervalDays =
+        order.installmentDetails.paymentIntervalDays || 30;
       order.installmentDetails.nextInstallmentDate = new Date(
-        Date.now() + 30 * 24 * 60 * 60 * 1000
+        Date.now() + paymentIntervalDays * 24 * 60 * 60 * 1000
       );
     } else {
       // Final installment: mark order as completed.
@@ -1782,7 +1493,6 @@ exports.processNextInstallment = async (orderId) => {
       await sendReceiptEmail(order, installmentNumber);
     } catch (emailError) {
       console.error("Failed to send receipt email:", emailError);
-      // Do not fail the order update if email sending fails.
     }
 
     return { success: true, paymentIntent };
@@ -1816,7 +1526,6 @@ exports.processNextInstallment = async (orderId) => {
     return { success: false, error: error.message };
   }
 };
-
 
 exports.uploadReceipt = [
   upload.single("receipt"), // "receipt" must match the FormData key from the frontend
@@ -1935,11 +1644,10 @@ exports.deleteReceipt = async (req, res) => {
   }
 };
 
-
 exports.proxyReceiptForViewing = async (req, res) => {
   try {
     const { donationId } = req.params;
-    
+
     // Find the order in your database
     const order = await Order.findOne({ donationId });
     if (!order || !order.receiptUrl) {
@@ -1948,34 +1656,34 @@ exports.proxyReceiptForViewing = async (req, res) => {
         message: "Receipt not found",
       });
     }
-    
+
     const receiptUrl = order.receiptUrl;
-    
+
     try {
       // Fetch the file from S3
       const response = await axios.get(receiptUrl, {
-        responseType: 'arraybuffer'
+        responseType: "arraybuffer",
       });
-      
+
       // Determine content type based on the file name
-      const fileName = receiptUrl.split('/').pop();
-      const fileExt = path.extname(fileName).replace('.', '').toLowerCase();
-      
+      const fileName = receiptUrl.split("/").pop();
+      const fileExt = path.extname(fileName).replace(".", "").toLowerCase();
+
       const contentTypes = {
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'gif': 'image/gif',
-        'pdf': 'application/pdf',
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        png: "image/png",
+        gif: "image/gif",
+        pdf: "application/pdf",
       };
-      
-      const contentType = contentTypes[fileExt] || 'application/octet-stream';
-      
+
+      const contentType = contentTypes[fileExt] || "application/octet-stream";
+
       // Set headers for inline display
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', 'inline');
-      res.setHeader('Cache-Control', 'public, max-age=300'); // Cache for 5 minutes
-      
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", "public, max-age=300"); // Cache for 5 minutes
+
       // Send the file
       return res.send(response.data);
     } catch (error) {

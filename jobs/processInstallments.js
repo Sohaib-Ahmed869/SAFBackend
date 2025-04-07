@@ -8,14 +8,14 @@ const orderController = require("../controllers/orderContrller");
  */
 const setupInstallmentProcessingJob = () => {
   // Schedule the job to run daily at midnight
-  cron.schedule("0 0 * * *", async () => {
+  cron.schedule("* * * * *", async () => {
     console.log("Running installment processing job");
     try {
       // Find all active installment orders with pending next payments
       const now = new Date();
       const orders = await Order.find({
         paymentType: "installments",
-        "installmentDetails.status": "active",
+        "paymentStatus": "active", // Instead of "processing"
         "installmentDetails.nextInstallmentDate": { $lte: now },
       });
 

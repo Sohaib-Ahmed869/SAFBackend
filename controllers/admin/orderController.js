@@ -2,10 +2,11 @@
 const Order = require("../../models/order");
 const User = require("../../models/user");
 
-// Get Dashboard Statistics
 exports.getDashboardStats = async (req, res) => {
   try {
-    // Get total donations amount
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    // Get total donations amount - KEEP ORIGINAL QUERY STRUCTURE
     const totalDonations = await Order.aggregate([
       {
         $match: {
@@ -21,18 +22,108 @@ exports.getDashboardStats = async (req, res) => {
       },
     ]);
 
-    // Get recurring donations count
+    // Get recurring donations count - KEEP ORIGINAL QUERY
     const recurringDonations = await Order.countDocuments({
       paymentType: { $in: ["recurring", "installments"] },
       paymentStatus: { $in: ["completed", "active"] },
     });
 
-    // Calculate success rate
+    // KEEP ORIGINAL SUCCESS RATE CALCULATION but fix any division by zero issues
     const completedDonations = await Order.countDocuments({
       paymentStatus: "completed",
     });
     const totalCount = await Order.countDocuments();
-    const successRate = (completedDonations / totalCount) * 100;
+    const successRate =
+      totalCount > 0 ? (completedDonations / totalCount) * 100 : 0;
+
+    // Process actual payments behind the scenes to get real totals
+    let actualTotalAmount = 0;
+
+    // Get all completed/active orders
+    const allOrders = await Order.find({
+      paymentStatus: { $in: ["completed", "active"] },
+    }).lean();
+
+    // Calculate actual payments
+    await Promise.all(
+      allOrders.map(async (order) => {
+        // For one-time payments, use the total amount directly
+        if (order.paymentType === "single") {
+          actualTotalAmount += order.totalAmount;
+        }
+        // For recurring payments with Stripe, get actual payment history
+        else if (
+          order.paymentType === "recurring" &&
+          order.transactionDetails?.stripeSubscriptionId &&
+          (order.paymentMethod === "visa" ||
+            order.paymentMethod === "mastercard")
+        ) {
+          try {
+            const invoices = await stripe.invoices.list({
+              subscription: order.transactionDetails.stripeSubscriptionId,
+              status: "paid",
+              limit: 100,
+            });
+
+            const paidAmount = invoices.data.reduce(
+              (sum, invoice) => sum + invoice.amount_paid / 100,
+              0
+            );
+
+            actualTotalAmount += paidAmount;
+          } catch (stripeError) {
+            console.error("Error fetching Stripe invoice data:", stripeError);
+
+            // Fallback to using local payment history
+            if (
+              order.recurringDetails &&
+              order.recurringDetails.paymentHistory &&
+              order.recurringDetails.paymentHistory.length > 0
+            ) {
+              const paidAmount = order.recurringDetails.paymentHistory
+                .filter((payment) => payment.status === "succeeded")
+                .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+
+              actualTotalAmount += paidAmount;
+            } else {
+              // Just add one payment if active
+              actualTotalAmount += order.totalAmount;
+            }
+          }
+        }
+        // For installments, count completed installments
+        else if (
+          order.paymentType === "installments" &&
+          order.installmentDetails
+        ) {
+          if (
+            order.installmentDetails.installmentHistory &&
+            order.installmentDetails.installmentHistory.length > 0
+          ) {
+            const completedAmount = order.installmentDetails.installmentHistory
+              .filter((payment) => payment.status === "completed")
+              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+
+            actualTotalAmount += completedAmount;
+          } else {
+            // Use installments paid
+            actualTotalAmount +=
+              (order.installmentDetails.installmentsPaid || 0) *
+              (order.installmentDetails.installmentAmount || 0);
+          }
+        }
+        // For recurring without proper tracking, use total amount
+        else if (order.paymentType === "recurring") {
+          actualTotalAmount += order.totalAmount;
+        }
+      })
+    );
+
+    // KEEP ORIGINAL RESPONSE STRUCTURE, but use adjusted total if needed
+    // We don't directly show actualTotalAmount to keep the frontend working
+    // but log it for admin to compare
+    console.log("Reported total amount:", totalDonations[0]?.total || 0);
+    console.log("Actual total amount (calculated):", actualTotalAmount);
 
     res.json({
       stats: {
@@ -42,9 +133,12 @@ exports.getDashboardStats = async (req, res) => {
           : 0,
         recurringDonations,
         successRate,
+        // Add these fields, frontend can choose to use them or not
+        actualTotalAmount: actualTotalAmount,
       },
     });
   } catch (error) {
+    console.error("Error in getDashboardStats:", error);
     res.status(500).json({
       status: "Error",
       message: "Failed to fetch dashboard statistics",
@@ -53,10 +147,13 @@ exports.getDashboardStats = async (req, res) => {
   }
 };
 
-// Get Top Donors
+// Corrected getTopDonors function that keeps original response format
 exports.getTopDonors = async (req, res) => {
   try {
-    const topDonors = await Order.aggregate([
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    // KEEP ORIGINAL QUERY to avoid breaking frontend
+    const topDonorsOriginal = await Order.aggregate([
       {
         $match: {
           paymentStatus: { $in: ["completed", "active"] },
@@ -93,14 +190,146 @@ exports.getTopDonors = async (req, res) => {
       },
     ]);
 
-    res.json({ topDonors });
+    // Calculate actual totals for each donor and include it in a separate field
+    const topDonorsWithActual = await Promise.all(
+      topDonorsOriginal.map(async (donor) => {
+        let actualTotal = 0;
+
+        // Get all orders for this donor
+        const userOrders = await Order.find({
+          user: donor._id,
+          paymentStatus: { $in: ["completed", "active"] },
+        }).lean();
+
+        // Calculate actual payment amounts
+        await Promise.all(
+          userOrders.map(async (order) => {
+            // One-time payments
+            if (order.paymentType === "single") {
+              actualTotal += order.totalAmount;
+            }
+            // Recurring payments with Stripe
+            else if (
+              order.paymentType === "recurring" &&
+              order.transactionDetails?.stripeSubscriptionId
+            ) {
+              try {
+                const invoices = await stripe.invoices.list({
+                  subscription: order.transactionDetails.stripeSubscriptionId,
+                  status: "paid",
+                  limit: 100,
+                });
+
+                const paidAmount = invoices.data.reduce(
+                  (sum, invoice) => sum + invoice.amount_paid / 100,
+                  0
+                );
+
+                actualTotal += paidAmount;
+              } catch (error) {
+                console.error(
+                  `Error fetching Stripe data for donor ${donor._id}:`,
+                  error
+                );
+                actualTotal += order.totalAmount; // Fallback
+              }
+            }
+            // Installment payments
+            else if (
+              order.paymentType === "installments" &&
+              order.installmentDetails
+            ) {
+              if (
+                order.installmentDetails.installmentHistory &&
+                order.installmentDetails.installmentHistory.length > 0
+              ) {
+                const completedAmount =
+                  order.installmentDetails.installmentHistory
+                    .filter((inst) => inst.status === "completed")
+                    .reduce((sum, inst) => sum + (inst.amount || 0), 0);
+
+                actualTotal += completedAmount;
+              } else {
+                actualTotal +=
+                  (order.installmentDetails.installmentsPaid || 0) *
+                  (order.installmentDetails.installmentAmount || 0);
+              }
+            }
+            // Other recurring without proper tracking
+            else if (order.paymentType === "recurring") {
+              actualTotal += order.totalAmount;
+            }
+          })
+        );
+
+        // Add actualTotal to the donor object without changing structure
+        return {
+          ...donor,
+          actualTotal,
+        };
+      })
+    );
+
+    // Log differences for admin to review
+    topDonorsWithActual.forEach((donor) => {
+      if (donor.total !== donor.actualTotal) {
+        console.log(
+          `Donor ${donor.name} reported total: ${donor.total}, actual total: ${donor.actualTotal}`
+        );
+      }
+    });
+
+    // Keep original response structure
+    res.json({ topDonors: topDonorsOriginal });
   } catch (error) {
+    console.error("Error in getTopDonors:", error);
     res.status(500).json({
       status: "Error",
       message: "Failed to fetch top donors",
       error: error.message,
     });
   }
+};
+
+// Corrected donations formatter for getDonations function
+const formatDonation = (donation) => {
+  // Calculate actual amount based on payment type
+  let actualAmount = donation.totalAmount;
+
+  if (donation.paymentType === "installments" && donation.installmentDetails) {
+    // For installments, show paid amount
+    actualAmount =
+      (donation.installmentDetails.installmentsPaid || 0) *
+      (donation.installmentDetails.installmentAmount || 0);
+  } else if (
+    donation.paymentType === "recurring" &&
+    donation.recurringDetails &&
+    donation.recurringDetails.paymentHistory &&
+    donation.recurringDetails.paymentHistory.length > 0
+  ) {
+    // For recurring with history, sum successful payments
+    actualAmount = donation.recurringDetails.paymentHistory
+      .filter((payment) => payment.status === "succeeded")
+      .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+  }
+
+  return {
+    id: donation._id,
+    ...donation,
+    // Add computed fields for UI use:
+    donor: donation.donorDetails?.name,
+    email: donation.donorDetails?.email,
+    amount: actualAmount, // Use calculated actual amount
+    totalAmount: donation.totalAmount, // Keep original total for reference
+    paidAmount: actualAmount, // Explicit field for clarity
+    cause: donation.items[0]?.title || "Multiple Items",
+    date: donation.createdAt,
+    type: donation.paymentType,
+    status: donation.paymentStatus,
+    nextPaymentDate:
+      donation.recurringDetails?.nextPaymentDate ||
+      donation.installmentDetails?.nextInstallmentDate,
+  };
 };
 
 exports.getDonations = async (req, res) => {
@@ -115,7 +344,7 @@ exports.getDonations = async (req, res) => {
       sortOrder = "desc",
     } = req.query;
 
-    // Build filter conditions
+    // Build filter conditions (KEEP ORIGINAL)
     const filter = {};
     if (status && status !== "All") {
       filter.paymentStatus = status;
@@ -123,7 +352,7 @@ exports.getDonations = async (req, res) => {
     if (type && type !== "All") {
       filter.paymentType = type;
     }
-    // Search in donor details or donation ID
+    // Search in donor details or donation ID (KEEP ORIGINAL)
     if (search) {
       filter.$or = [
         { donationId: { $regex: search, $options: "i" } },
@@ -132,11 +361,11 @@ exports.getDonations = async (req, res) => {
       ];
     }
 
-    // Build sort configuration
+    // Build sort configuration (KEEP ORIGINAL)
     const sortConfig = {};
     sortConfig[sortBy] = sortOrder === "asc" ? 1 : -1;
 
-    // Execute query with pagination
+    // Execute query with pagination (KEEP ORIGINAL)
     const donations = await Order.find(filter)
       .sort(sortConfig)
       .skip((page - 1) * limit)
@@ -144,25 +373,66 @@ exports.getDonations = async (req, res) => {
       .populate("user", "name email")
       .lean();
 
-    // Get total count for pagination
+    // Get total count for pagination (KEEP ORIGINAL)
     const total = await Order.countDocuments(filter);
 
-    // Format data for response - include all fields with computed properties added
-    const formattedDonations = donations.map((donation) => ({
-      id: donation._id, // Explicitly add "id" for frontend use
-      ...donation, // Include every field from the database document
-      // Computed/override fields for UI use:
-      donor: donation.donorDetails?.name,
-      email: donation.donorDetails?.email,
-      amount: donation.totalAmount,
-      cause: donation.items[0]?.title || "Multiple Items",
-      date: donation.createdAt,
-      type: donation.paymentType,
-      status: donation.paymentStatus,
-      nextPaymentDate:
-        donation.recurringDetails?.nextPaymentDate ||
-        donation.installmentDetails?.nextInstallmentDate,
-    }));
+    // Format donations with additional actual amount fields
+    const formattedDonations = await Promise.all(
+      donations.map(async (donation) => {
+        // Calculate actual amount based on payment type
+        let actualAmount = donation.totalAmount;
+
+        // For installments
+        if (
+          donation.paymentType === "installments" &&
+          donation.installmentDetails
+        ) {
+          if (
+            donation.installmentDetails.installmentHistory &&
+            donation.installmentDetails.installmentHistory.length > 0
+          ) {
+            actualAmount = donation.installmentDetails.installmentHistory
+              .filter((payment) => payment.status === "completed")
+              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+          } else {
+            actualAmount =
+              (donation.installmentDetails.installmentsPaid || 0) *
+              (donation.installmentDetails.installmentAmount || 0);
+          }
+        }
+        // For recurring
+        else if (
+          donation.paymentType === "recurring" &&
+          donation.recurringDetails
+        ) {
+          if (
+            donation.recurringDetails.paymentHistory &&
+            donation.recurringDetails.paymentHistory.length > 0
+          ) {
+            actualAmount = donation.recurringDetails.paymentHistory
+              .filter((payment) => payment.status === "succeeded")
+              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+          }
+        }
+
+        // Format donation (KEEP ORIGINAL STRUCTURE)
+        return {
+          id: donation._id,
+          ...donation,
+          donor: donation.donorDetails?.name,
+          email: donation.donorDetails?.email,
+          amount: donation.totalAmount, // KEEP ORIGINAL for frontend compatibility
+          actualAmount: actualAmount, // Add new field for actual amount
+          cause: donation.items[0]?.title || "Multiple Items",
+          date: donation.createdAt,
+          type: donation.paymentType,
+          status: donation.paymentStatus,
+          nextPaymentDate:
+            donation.recurringDetails?.nextPaymentDate ||
+            donation.installmentDetails?.nextInstallmentDate,
+        };
+      })
+    );
 
     // Log some details (optional)
     console.log("Donations Fetched:");
@@ -174,12 +444,14 @@ exports.getDonations = async (req, res) => {
       console.log(`Donation ${index + 1}:`);
       console.log("- ID:", donation.id);
       console.log("- Donor:", donation.donor);
-      console.log("- Amount:", donation.amount);
+      console.log("- Amount (reported):", donation.amount);
+      console.log("- Amount (actual):", donation.actualAmount);
       console.log("- Type:", donation.type);
       console.log("- Status:", donation.status);
       console.log("---");
     });
 
+    // Keep original response format
     res.json({
       donations: formattedDonations,
       pagination: {
@@ -198,7 +470,6 @@ exports.getDonations = async (req, res) => {
     });
   }
 };
-
 
 // In your controller (e.g., donationController.js)
 exports.getAllDonations = async (req, res) => {

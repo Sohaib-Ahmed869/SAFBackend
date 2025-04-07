@@ -4,19 +4,44 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 exports.getActiveSubscriptions = async (req, res) => {
   try {
-    const activeSubscriptions = await Order.find({
-      user: req.user._id,
-      paymentType: { $in: ["recurring", "installments"] },
-      paymentStatus: { $ne: "failed" },
-      $or: [
-        { "recurringDetails.endDate": { $gt: new Date() } },
-        { "recurringDetails.endDate": null },
-      ],
-    }).sort({ createdAt: -1 });
+    const activeSubscriptions = await Order.aggregate([
+      {
+        $match: {
+          user: req.user._id, // You'll need to convert this to ObjectId
+          paymentType: { $in: ["recurring", "installments"] }
+        },
+      },
+      {
+        $match: {
+          $or: [
+            // For recurring payments
+            {
+              paymentType: "recurring",
+              $or: [
+                { "recurringDetails.endDate": { $gt: new Date() } },
+                { "recurringDetails.endDate": null },
+              ],
+            },
+            // For installment payments - now correctly comparing fields
+            {
+              paymentType: "installments",
+              $expr: {
+                $lt: [
+                  "$installmentDetails.installmentsPaid",
+                  "$installmentDetails.numberOfInstallments",
+                ],
+              },
+            },
+          ],
+        },
+      },
+      { $sort: { createdAt: -1 } },
+    ]);
 
     const formattedSubscriptions = activeSubscriptions.map((subscription) => ({
       id: subscription._id,
       cause: subscription.items[0]?.title,
+      endDate: subscription.recurringDetails?.endDate || null,
       amount:
         subscription.paymentType === "recurring"
           ? subscription.recurringDetails.amount
@@ -223,6 +248,7 @@ exports.cancelSubscription = async (req, res) => {
   try {
     const { subscriptionId } = req.params;
     const { reason } = req.body;
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
     const subscription = await Order.findOne({
       _id: subscriptionId,
@@ -236,12 +262,52 @@ exports.cancelSubscription = async (req, res) => {
       });
     }
 
-    // Cancel subscription in Stripe if it's a recurring payment with Stripe
+    // If this is a Stripe subscription, get payment history before cancelling
     if (
       subscription.paymentType === "recurring" &&
-      subscription.paymentMethod === "card" &&
       subscription.transactionDetails?.stripeSubscriptionId
     ) {
+      try {
+        // Get all paid invoices for this subscription before cancelling
+        const invoices = await stripe.invoices.list({
+          subscription: subscription.transactionDetails.stripeSubscriptionId,
+          status: 'paid',
+          limit: 100,
+        });
+        
+        // Record all payments in our local payment history
+        if (subscription.recurringDetails) {
+          subscription.recurringDetails.paymentHistory = subscription.recurringDetails.paymentHistory || [];
+          
+          // Add any payments from Stripe not already in our history
+          for (const invoice of invoices.data) {
+            const paymentDate = new Date(invoice.status_transitions.paid_at * 1000);
+            const paymentAmount = invoice.amount_paid / 100; // Convert from cents
+            
+            // Check if we already have this payment recorded
+            const paymentExists = subscription.recurringDetails.paymentHistory.some(p => 
+              p.invoiceId === invoice.id);
+            
+            if (!paymentExists) {
+              subscription.recurringDetails.paymentHistory.push({
+                date: paymentDate,
+                amount: paymentAmount,
+                invoiceId: invoice.id,
+                status: "succeeded",
+              });
+            }
+          }
+          
+          // Update total payments count
+          subscription.recurringDetails.totalPayments = 
+            subscription.recurringDetails.paymentHistory.filter(p => 
+              p.status === "succeeded").length;
+        }
+      } catch (stripeError) {
+        console.error("Error fetching Stripe payment history:", stripeError);
+        // Continue with cancellation even if getting history fails
+      }
+      
       try {
         // Cancel subscription in Stripe
         await stripe.subscriptions.cancel(
@@ -473,6 +539,265 @@ exports.getSubscriptionById = async (req, res) => {
   }
 };
 
+// Add to controllers/subscriptionController.js
+exports.updateSubscriptionEndDate = async (req, res) => {
+  try {
+    const { subscriptionId } = req.params;
+    const { newEndDate } = req.body;
+
+    const subscription = await Order.findOne({
+      _id: subscriptionId,
+      user: req.user._id,
+    });
+
+    if (!subscription) {
+      return res.status(404).json({
+        status: "Error",
+        message: "Subscription not found",
+      });
+    }
+
+    // Update end date in Stripe if applicable
+    if (
+      subscription.paymentType === "recurring" &&
+      subscription.transactionDetails?.stripeSubscriptionId
+    ) {
+      try {
+        // Calculate Unix timestamp for the new end date
+        const endDateTimestamp = Math.floor(
+          new Date(newEndDate).getTime() / 1000
+        );
+
+        // Update subscription with the new end date (cancel_at)
+        await stripe.subscriptions.update(
+          subscription.transactionDetails.stripeSubscriptionId,
+          {
+            cancel_at: endDateTimestamp,
+          }
+        );
+
+        console.log(
+          `Updated Stripe subscription end date: ${subscription.transactionDetails.stripeSubscriptionId}`
+        );
+      } catch (stripeError) {
+        console.error("Stripe subscription update error:", stripeError);
+        return res.status(400).json({
+          status: "Error",
+          message: `Failed to update subscription end date in Stripe: ${stripeError.message}`,
+        });
+      }
+    }
+
+    // Update local subscription record
+    if (subscription.paymentType === "recurring") {
+      subscription.recurringDetails.endDate = new Date(newEndDate);
+    } else if (subscription.paymentType === "installments") {
+      subscription.installmentDetails.endDate = new Date(newEndDate);
+    }
+
+    subscription.endDateHistory = subscription.endDateHistory || [];
+    subscription.endDateHistory.push({
+      oldEndDate: subscription.endDate,
+      newEndDate: new Date(newEndDate),
+      date: new Date(),
+    });
+
+    await subscription.save();
+
+    res.json({
+      status: "Success",
+      message: "Subscription end date updated successfully",
+      subscription,
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to update subscription end date",
+      error: error.message,
+    });
+  }
+};
+
+async function handlePaymentIntentSucceeded(paymentIntent) {
+  try {
+    // Check if this is related to an order
+    if (!paymentIntent.metadata || !paymentIntent.metadata.orderId) {
+      console.log("Payment intent without order metadata, ignoring");
+      return;
+    }
+
+    const orderId = paymentIntent.metadata.orderId;
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      console.log(`No order found for payment intent ${paymentIntent.id}`);
+      return;
+    }
+
+    // Handle installment payments
+    if (
+      order.paymentType === "installments" &&
+      paymentIntent.metadata.installment
+    ) {
+      const installmentNumber = parseInt(paymentIntent.metadata.installment);
+
+      console.log(
+        `Processing successful installment ${installmentNumber} for order ${orderId}`
+      );
+
+      // Find the installment in history or add it
+      const historyIndex =
+        order.installmentDetails.installmentHistory.findIndex(
+          (history) => history.transactionId === paymentIntent.id
+        );
+
+      if (historyIndex >= 0) {
+        // Update existing history entry
+        order.installmentDetails.installmentHistory[historyIndex].status =
+          "completed";
+      } else {
+        // Add new history entry if not found
+        order.installmentDetails.installmentHistory.push({
+          installmentNumber,
+          amount: paymentIntent.amount / 100, // Convert from cents
+          date: new Date(),
+          status: "completed",
+          transactionId: paymentIntent.id,
+        });
+      }
+
+      // Update installment paid count if needed
+      if (order.installmentDetails.installmentsPaid < installmentNumber) {
+        order.installmentDetails.installmentsPaid = installmentNumber;
+      }
+
+      // Check if all installments are completed
+      if (
+        order.installmentDetails.installmentsPaid >=
+        order.installmentDetails.numberOfInstallments
+      ) {
+        order.installmentDetails.status = "completed";
+        order.paymentStatus = "completed";
+      } else {
+        // Set the next installment date (30 days later by default)
+        const paymentIntervalDays =
+          order.installmentDetails.paymentIntervalDays || 30;
+        order.installmentDetails.nextInstallmentDate = new Date(
+          Date.now() + paymentIntervalDays * 24 * 60 * 60 * 1000
+        );
+
+        // Make sure status is active
+        if (
+          order.paymentStatus === "failed" ||
+          order.paymentStatus === "pending"
+        ) {
+          order.paymentStatus = "active";
+        }
+      }
+
+      await order.save();
+      console.log(
+        `Updated order ${orderId} for installment ${installmentNumber}`
+      );
+    }
+    // Handle one-time payments
+    else if (order.paymentType === "single") {
+      order.paymentStatus = "completed";
+      await order.save();
+      console.log(`Updated one-time order ${orderId} to completed status`);
+    }
+  } catch (error) {
+    console.error("Error handling payment_intent.succeeded:", error);
+  }
+}
+
+// Handler for payment intent failed (used by installments)
+async function handlePaymentIntentFailed(paymentIntent) {
+  try {
+    // Check if this is related to an order
+    if (!paymentIntent.metadata || !paymentIntent.metadata.orderId) {
+      console.log("Payment intent without order metadata, ignoring");
+      return;
+    }
+
+    const orderId = paymentIntent.metadata.orderId;
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      console.log(`No order found for payment intent ${paymentIntent.id}`);
+      return;
+    }
+
+    // Handle installment payments
+    if (
+      order.paymentType === "installments" &&
+      paymentIntent.metadata.installment
+    ) {
+      const installmentNumber = parseInt(paymentIntent.metadata.installment);
+
+      console.log(
+        `Processing failed installment ${installmentNumber} for order ${orderId}`
+      );
+
+      // Find the installment in history or add it
+      const historyIndex =
+        order.installmentDetails.installmentHistory.findIndex(
+          (history) => history.transactionId === paymentIntent.id
+        );
+
+      if (historyIndex >= 0) {
+        // Update existing history entry
+        order.installmentDetails.installmentHistory[historyIndex].status =
+          "failed";
+        order.installmentDetails.installmentHistory[historyIndex].error =
+          paymentIntent.last_payment_error?.message || "Payment failed";
+      } else {
+        // Add new history entry
+        order.installmentDetails.installmentHistory.push({
+          installmentNumber,
+          amount: paymentIntent.amount / 100, // Convert from cents
+          date: new Date(),
+          status: "failed",
+          transactionId: paymentIntent.id,
+          error: paymentIntent.last_payment_error?.message || "Payment failed",
+        });
+      }
+
+      // Count consecutive failures
+      const recentFailures = order.installmentDetails.installmentHistory
+        .filter((h) => h.status === "failed")
+        .slice(-3);
+
+      // If multiple failures, mark the order as failed
+      if (recentFailures.length >= 3) {
+        order.paymentStatus = "failed";
+      } else {
+        // Schedule a retry in 24 hours
+        order.installmentDetails.nextInstallmentDate = new Date(
+          Date.now() + 24 * 60 * 60 * 1000
+        );
+      }
+
+      await order.save();
+      console.log(
+        `Updated order ${orderId} for failed installment ${installmentNumber}`
+      );
+    }
+    // Handle one-time payments
+    else if (order.paymentType === "single") {
+      order.paymentStatus = "failed";
+      order.transactionDetails = {
+        ...order.transactionDetails,
+        error: paymentIntent.last_payment_error?.message || "Payment failed",
+      };
+      await order.save();
+      console.log(`Updated one-time order ${orderId} to failed status`);
+    }
+  } catch (error) {
+    console.error("Error handling payment_intent.payment_failed:", error);
+  }
+}
+
 // Stripe webhook handler
 exports.handleStripeWebhook = async (req, res) => {
   const signature = req.headers["stripe-signature"];
@@ -493,7 +818,10 @@ exports.handleStripeWebhook = async (req, res) => {
 
   // Handle different event types
   try {
+    console.log(`Processing webhook event: ${event.type}`);
+
     switch (event.type) {
+      // Subscription events
       case "invoice.payment_succeeded":
         await handleInvoicePaymentSucceeded(event.data.object);
         break;
@@ -506,7 +834,15 @@ exports.handleStripeWebhook = async (req, res) => {
       case "customer.subscription.deleted":
         await handleSubscriptionDeleted(event.data.object);
         break;
-      // Add other event types as needed
+
+      // Payment Intent events (for installments and one-time payments)
+      case "payment_intent.succeeded":
+        await handlePaymentIntentSucceeded(event.data.object);
+        break;
+      case "payment_intent.payment_failed":
+        await handlePaymentIntentFailed(event.data.object);
+        break;
+
       default:
         console.log(`Unhandled event type ${event.type}`);
     }

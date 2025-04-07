@@ -58,7 +58,7 @@ const OrderSchema = new Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ["visa", "mastercard", "bank"],
+      enum: ["visa", "mastercard", "bank", "card"],
       required: true,
     }    
     ,
@@ -74,6 +74,7 @@ const OrderSchema = new Schema(
         "paused",
         "cancelled",
         "past_due",
+        "ended"
       ],
       default: "pending",
     },

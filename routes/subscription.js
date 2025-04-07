@@ -41,7 +41,11 @@ router.post(
   auth,
   subscriptionController.updateSubscriptionAmount
 );
-
+router.post(
+  "/:subscriptionId/update-end-date",
+  auth,
+  subscriptionController.updateSubscriptionEndDate
+);
 // Stripe webhook handler (no auth required as it comes from Stripe)
 router.post("/webhook", subscriptionController.handleStripeWebhook);
 
