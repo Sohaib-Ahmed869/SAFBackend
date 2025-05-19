@@ -1097,6 +1097,27 @@ exports.getOrderStats = async (req, res) => {
       ).length,
       pendingOrders: orders.filter((order) => order.paymentStatus === "pending")
         .length,
+      pendingAmount: orders.reduce((sum, order) => {
+        // Add amount for pending orders
+        if (order.paymentStatus === "pending") {
+          return sum + order.totalAmount;
+        }
+        // Add remaining installment amounts for active installment orders
+        if (order.paymentType === "installments" && 
+            order.installmentDetails && 
+            order.installmentDetails.status === "active") {
+          const totalInstallments = order.installmentDetails.numberOfInstallments;
+          const paidInstallments = order.installmentDetails.installmentsPaid || 0;
+          const remainingInstallments = totalInstallments - paidInstallments;
+          const installmentAmount = order.installmentDetails.installmentAmount;
+          
+          // Calculate remaining amount
+          const remainingAmount = remainingInstallments * installmentAmount;
+          console.log(`Order ${order.donationId}: ${remainingInstallments} installments remaining of $${installmentAmount} each = $${remainingAmount}`);
+          return sum + remainingAmount;
+        }
+        return sum;
+      }, 0),
       failedOrders: orders.filter((order) => order.paymentStatus === "failed")
         .length,
       cancelledOrders: orders.filter(

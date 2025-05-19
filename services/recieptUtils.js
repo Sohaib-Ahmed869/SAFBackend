@@ -125,9 +125,9 @@ const generateReceiptPDF = async (
       });
 
       // Add total amount
-      doc.y = lastY + 10;
+      doc.y = lastY + 15;
       doc.fontSize(9).text(`Total Amount: $${totalAmount.toFixed(2)}`, {
-        align: "left",
+        align: "right",
       });
 
       // Add payment details
@@ -365,7 +365,7 @@ const createTable = (doc, data, x, y) => {
     // Amount column
     doc.text(data[0].amount, x + dateColWidth + descColWidth + 5, textY, {
       width: amountColWidth - 10,
-      align: "right",
+      align: "left",
     });
 
     // Reset font

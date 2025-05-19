@@ -88,15 +88,17 @@ exports.getDashboardStats = async (req, res) => {
       },
     ]);
 
-    // Format trend data
-    const trendData = monthlyTrend.map((item) => ({
-      month: new Date(item._id.year, item._id.month - 1).toLocaleString(
-        "default",
-        { month: "short" }
-      ),
-      amount: item.amount,
-      subscribers: item.subscribers,
-    }));
+   // Format trend data properly including the year
+const trendData = monthlyTrend.map((item) => ({
+  month: new Date(item._id.year, item._id.month - 1).toLocaleString(
+    "default",
+    { month: "short" }
+  ),
+  year: item._id.year, // Make sure to include the year
+  amount: item.amount,
+  subscribers: item.subscribers,
+}));
+
 
     const stats = {
       activeSubscriptions: subscriptionStats[0]?.activeSubscriptions || 0,
