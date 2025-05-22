@@ -85,6 +85,13 @@ exports.login = async (req, res) => {
       throw new Error("Invalid login credentials");
     }
 
+    // Update last login time
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Check if the user is using a temporary password
+    const passwordChangeRequired = user.isTemporaryPassword === true;
+
     res.json({
       _id: user._id,
       name: user.name,
@@ -93,6 +100,7 @@ exports.login = async (req, res) => {
       email: user.email,
       phone: user.phone,
       address: user.address,
+      passwordChangeRequired: passwordChangeRequired,
       token: generateToken(user._id),
     });
   } catch (error) {
@@ -159,7 +167,6 @@ exports.loginAdmin = async (req, res) => {
 
     const isMatch = await bcrypt.compare(password, user.password);
 
-
     if (!isMatch) {
       throw new Error("Invalid login credentials");
     }
@@ -168,6 +175,11 @@ exports.loginAdmin = async (req, res) => {
       throw new Error("Unauthorized");
     }
 
+    // Update last login time
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Admins don't need to change temporary passwords
     res.json({
       _id: user._id,
       name: user.name,
@@ -282,6 +294,10 @@ exports.resetPassword = async (req, res) => {
     user.password = hashedPassword;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
+    
+    // Mark this as a temporary password that needs to be changed on first login
+    user.isTemporaryPassword = true;
+    
     await user.save();
 
     // Send confirmation email
@@ -534,6 +550,33 @@ exports.updateUser = async (req, res) => {
 
 
 
+exports.checkPasswordStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        status: "Error",
+        message: "User not found",
+      });
+    }
+
+    // Check if the user is using a temporary password
+    const passwordChangeRequired = user.isTemporaryPassword === true;
+
+    res.status(200).json({
+      status: "Success",
+      passwordChangeRequired,
+    });
+  } catch (error) {
+    console.error("Check password status error:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Could not check password status",
+      error: error.message,
+    });
+  }
+};
+
 exports.updatePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -557,6 +600,12 @@ exports.updatePassword = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
+    
+    // Reset the temporary password flag if it was set
+    if (user.isTemporaryPassword) {
+      user.isTemporaryPassword = false;
+    }
+    
     await user.save();
 
     res.status(200).json({

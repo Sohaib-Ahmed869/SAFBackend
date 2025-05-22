@@ -74,7 +74,8 @@ const OrderSchema = new Schema(
         "paused",
         "cancelled",
         "past_due",
-        "ended"
+        "ended",
+        "pending_cancellation"
       ],
       default: "pending",
     },
@@ -339,6 +340,7 @@ OrderSchema.virtual("subscriptionStatus").get(function () {
   if (this.paymentStatus === "paused") return "Paused";
   if (this.paymentStatus === "failed") return "Failed";
   if (this.paymentStatus === "past_due") return "Past Due";
+  if (this.paymentStatus === "pending_cancellation") return "Cancellation Pending";
 
   if (
     this.paymentType === "installments" &&

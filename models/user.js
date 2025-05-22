@@ -68,6 +68,10 @@ const userSchema = new mongoose.Schema(
     dateOfBirth: Date,
     resetPasswordToken: String,
     resetPasswordExpires: Date,
+    isTemporaryPassword: {
+      type: Boolean,
+      default: false
+    },
     authProvider: {
       type: String,
       enum: ["local", "google"],

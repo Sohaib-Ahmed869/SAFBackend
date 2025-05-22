@@ -126,7 +126,7 @@ const generateReceiptPDF = async (
 
       // Add total amount
       doc.y = lastY + 15;
-      doc.fontSize(9).text(`Total Amount: $${totalAmount.toFixed(2)}`, {
+      doc.fontSize(9).text(`Total Amount: $ ${totalAmount.toFixed(2)}`, {
         align: "right",
       });
 

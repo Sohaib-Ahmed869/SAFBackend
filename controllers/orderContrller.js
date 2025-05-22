@@ -39,6 +39,7 @@ const createUserForDonor = async (donorDetails, donationId) => {
       name: donorDetails.name,
       phone: donorDetails.phone,
       role: "user",
+      isTemporaryPassword: true, // Mark as temporary password that needs to be changed on first login
     });
 
     // Save the user
@@ -177,6 +178,201 @@ const calculateBillingAnchor = (billingDay) => {
   return Math.floor(billingDate.getTime() / 1000);
 };
 
+const sendBankTransferPendingEmail = async (order) => {
+  try {
+    // Get user from the order
+    const user = await User.findById(order.user);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for order:", order.donationId);
+      return;
+    }
+
+    console.log("Attempting to send bank transfer pending email to:", user.email);
+
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4a7c59;">Bank Transfer Donation Pending</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>Thank you for your generous donation to the Shahid Afridi Foundation. Your donation is currently pending approval.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${order.donationId}</p>
+          <p><strong>Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+          <p><strong>Amount:</strong> $${order.totalAmount.toFixed(2)} AUD</p>
+        </div>
+
+        <div style="background-color: #fffaed; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ffc107;">
+          <h3 style="margin-top: 0; color: #856404;">Next Steps:</h3>
+          <p>To complete your donation, please either:</p>
+          <ol style="padding-left: 20px;">
+            <li>Upload proof of payment through our website using your donation ID: ${order.donationId}</li>
+            <li>Email your payment proof to: info@ShahidAfridiFoundation.org.au</li>
+          </ol>
+          <p>Your donation will be processed once we receive and verify your payment proof.</p>
+        </div>
+        
+        <p>Thank you for your support!</p>
+      </div>
+    `;
+
+    const result = await sendEmail(
+      user.email,
+      emailBody,
+      "Bank Transfer Donation Pending - Shahid Afridi Foundation"
+    );
+
+    if (!result.success) {
+      console.error("Failed to send bank transfer pending email:", result.error);
+      console.error("Email details:", {
+        to: user.email,
+        subject: "Bank Transfer Donation Pending - Shahid Afridi Foundation",
+        donationId: order.donationId
+      });
+    } else {
+      console.log("Bank transfer pending email sent successfully to:", user.email);
+    }
+  } catch (error) {
+    console.error("Error sending bank transfer pending email:", error);
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+      donationId: order.donationId
+    });
+  }
+};
+
+const sendCancellationRequestEmail = async (order) => {
+  try {
+    // Get user from the order
+    const user = await User.findById(order.user);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for order:", order.donationId);
+      return;
+    }
+
+    // Send email to admin
+    const adminEmailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #4a7c59;">Subscription Cancellation Request</h2>
+        
+        <p>A donor has requested to cancel their recurring donation.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${order.donationId}</p>
+          <p><strong>Donor Name:</strong> ${user.name}</p>
+          <p><strong>Donor Email:</strong> ${user.email}</p>
+          <p><strong>Amount:</strong> $${order.totalAmount.toFixed(2)} AUD</p>
+          <p><strong>Frequency:</strong> ${order.recurringDetails.frequency}</p>
+          <p><strong>Start Date:</strong> ${new Date(order.recurringDetails.startDate).toLocaleDateString()}</p>
+        </div>
+
+        <p>Please review this request and take appropriate action through the admin panel.</p>
+      </div>
+    `;
+
+    await sendEmail(
+      "momoashfaq@gmail.com", //THIS IS MARYAM'S EMAIL FOR TESTING
+      // Use the actual admin email here
+      //info@shahidafridifoundation.org.au is the actual admin email
+      adminEmailBody,
+      "Subscription Cancellation Request - Shahid Afridi Foundation"
+    );
+
+    // Send confirmation email to donor
+    const donorEmailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #4a7c59;">Cancellation Request Received</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>We have received your request to cancel your recurring donation.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${order.donationId}</p>
+          <p><strong>Amount:</strong> $${order.totalAmount.toFixed(2)} AUD</p>
+          <p><strong>Frequency:</strong> ${order.recurringDetails.frequency}</p>
+        </div>
+
+        <p>Our admin team will review your request and process it accordingly. You will receive another email once the cancellation is confirmed.</p>
+        
+        <p>Thank you for your support!</p>
+      </div>
+    `;
+
+    await sendEmail(
+      user.email,
+      donorEmailBody,
+      "Cancellation Request Received - Shahid Afridi Foundation"
+    );
+
+    console.log(`Cancellation request emails sent for order: ${order.donationId}`);
+  } catch (error) {
+    console.error("Error sending cancellation request emails:", error);
+  }
+};
+
+exports.requestCancellation = async (req, res) => {
+  try {
+    const { donationId } = req.params;
+    const order = await Order.findOne({ donationId });
+
+    if (!order) {
+      return res.status(404).json({
+        status: "Error",
+        message: "Donation not found",
+      });
+    }
+
+    // Check if this is a recurring donation
+    if (order.paymentType !== "recurring") {
+      return res.status(400).json({
+        status: "Error",
+        message: "Only recurring donations can be cancelled",
+      });
+    }
+
+    // Check if already pending cancellation
+    if (order.paymentStatus === "pending_cancellation") {
+      return res.status(400).json({
+        status: "Error",
+        message: "Cancellation request already pending",
+      });
+    }
+
+    // Update order status to pending cancellation
+    order.paymentStatus = "pending_cancellation";
+    await order.save();
+
+    // Send cancellation request emails
+    await sendCancellationRequestEmail(order);
+
+    res.json({
+      status: "Success",
+      message: "Cancellation request submitted successfully",
+      order: {
+        donationId: order.donationId,
+        paymentStatus: order.paymentStatus
+      }
+    });
+  } catch (error) {
+    console.error("Error processing cancellation request:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to process cancellation request",
+      error: error.message,
+    });
+  }
+};
+
 exports.createOrder = async (req, res) => {
   try {
     const {
@@ -212,12 +408,7 @@ exports.createOrder = async (req, res) => {
         const userUpdates = {
           name: donorDetails.name,
           phone: donorDetails.phone,
-          address: {
-            street: donorDetails.streetAddress,
-            city: donorDetails.townCity,
-            state: donorDetails.state,
-            postcode: donorDetails.postcode,
-          },
+          
         };
         await User.findByIdAndUpdate(user._id, userUpdates);
         console.log(`Updated user details for user ${user._id}`);
@@ -274,20 +465,19 @@ exports.createOrder = async (req, res) => {
       }
     }
 
+    console.log("Donor Details", donorDetails);
+
     // Update donor details if needed
     if (donorDetails.rememberDetails && user) {
       await User.findByIdAndUpdate(user._id, {
         name: donorDetails.name,
         phone: donorDetails.phone,
         email: donorDetails.email,
-        address: {
-          street: donorDetails.streetAddress,
-          city: donorDetails.townCity,
-          state: donorDetails.state,
-          postcode: donorDetails.postcode,
-        },
+        
       });
     }
+ console.log("Donor Details2", donorDetails);
+
 
     // Process items array
     const processedItems = items.map((item) => ({
@@ -829,22 +1019,11 @@ exports.createOrder = async (req, res) => {
     }
 
     if (paymentMethod === "bank") {
-      if (savedOrder.paymentStatus === "completed") {
         try {
-          await sendReceiptEmail(savedOrder);
-          console.log(
-            `Bank transfer receipt sent for order: ${savedOrder.donationId}`
-          );
+        await sendBankTransferPendingEmail(savedOrder);
+        console.log(`Bank transfer pending email sent for order: ${savedOrder.donationId}`);
         } catch (emailError) {
-          console.error(
-            "Failed to send bank transfer receipt email:",
-            emailError
-          );
-        }
-      } else {
-        console.log(
-          `Order ${savedOrder.donationId} is still pending; receipt not sent.`
-        );
+        console.error("Failed to send bank transfer pending email:", emailError);
       }
     }
 
@@ -1561,6 +1740,14 @@ exports.uploadReceipt = [
         });
       }
 
+      // Check if the file was actually uploaded to S3
+      if (!req.file.location) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to upload file to storage",
+        });
+      }
+
       // multer-s3 automatically adds a "location" property with the S3 file URL
       const fileUrl = req.file.location;
 
@@ -1593,6 +1780,30 @@ exports.uploadReceipt = [
       });
     } catch (error) {
       console.error("Error uploading receipt:", error);
+      
+      // Handle specific error cases
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          message: "File size must be less than 5MB",
+        });
+      }
+      
+      if (error.message === 'Only image files are allowed!') {
+        return res.status(400).json({
+          success: false,
+          message: "Only JPG, PNG, and GIF files are allowed",
+        });
+      }
+
+      // Handle S3-specific errors
+      if (error.name === 'S3Error' || error.name === 'NoSuchBucket') {
+        return res.status(500).json({
+          success: false,
+          message: "Storage service error. Please try again later.",
+        });
+      }
+
       return res.status(500).json({
         success: false,
         message: "Server error uploading receipt",

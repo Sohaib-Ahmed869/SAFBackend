@@ -77,22 +77,30 @@ const scheduleSubscriptionChecks = () => {
               `Subscription ${subscription._id} is marked as canceled in Stripe, setting to cancelled`
             );
           }
-          // Otherwise, check for other statuses
+          // Otherwise, check for other statuses, but preserve pending_cancellation
           else {
-            switch (stripeSubscription.status) {
-              case "active":
-                newStatus = "active";
-                break;
-              case "past_due":
-                newStatus = "past_due";
-                break;
-              case "unpaid":
-                newStatus = "failed";
-                break;
-              case "completed":
-                newStatus = "ended";
-                break;
-              // No default case - we'll keep the current status if no match
+            // Skip status update if subscription is pending cancellation
+            if (subscription.paymentStatus === "pending_cancellation") {
+              console.log(
+                `Subscription ${subscription._id} is pending cancellation, preserving status`
+              );
+              // Keep the current pending_cancellation status
+            } else {
+              switch (stripeSubscription.status) {
+                case "active":
+                  newStatus = "active";
+                  break;
+                case "past_due":
+                  newStatus = "past_due";
+                  break;
+                case "unpaid":
+                  newStatus = "failed";
+                  break;
+                case "completed":
+                  newStatus = "ended";
+                  break;
+                // No default case - we'll keep the current status if no match
+              }
             }
           }
 

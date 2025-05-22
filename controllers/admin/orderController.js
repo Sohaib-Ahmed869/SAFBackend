@@ -1,6 +1,7 @@
 // controllers/adminController.js
 const Order = require("../../models/order");
 const User = require("../../models/user");
+const { sendEmail } = require("../../services/emailUtil");
 
 exports.getDashboardStats = async (req, res) => {
   try {
@@ -332,6 +333,129 @@ const formatDonation = (donation) => {
   };
 };
 
+const sendCancellationConfirmationEmail = async (donation) => {
+  try {
+    // Get user from the donation
+    const user = await User.findById(donation.user);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for donation:", donation.donationId);
+      return;
+    }
+
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4a7c59;">Subscription Cancelled</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>Your request to cancel your recurring donation has been processed.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${donation.donationId}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
+          <p><strong>Frequency:</strong> ${donation.recurringDetails.frequency}</p>
+        </div>
+
+        <p>Your recurring donation has been cancelled and no further payments will be processed.</p>
+        
+        <p>Thank you for your past support!</p>
+      </div>
+    `;
+
+    const result = await sendEmail(
+      user.email,
+      emailBody,
+      "Subscription Cancelled - Shahid Afridi Foundation"
+    );
+
+    if (!result.success) {
+      console.error("Failed to send cancellation confirmation email:", result.error);
+    } else {
+      console.log("Cancellation confirmation email sent successfully to:", user.email);
+    }
+  } catch (error) {
+    console.error("Error sending cancellation confirmation email:", error);
+  }
+};
+
+exports.processCancellationRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action } = req.body; // 'approve' or 'reject'
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Invalid action. Must be 'approve' or 'reject'",
+      });
+    }
+
+    const donation = await Order.findById(id);
+
+    if (!donation) {
+      return res.status(404).json({
+        status: "Error",
+        message: "Donation not found",
+      });
+    }
+
+    if (donation.paymentStatus !== "pending_cancellation") {
+      return res.status(400).json({
+        status: "Error",
+        message: "This donation is not pending cancellation",
+      });
+    }
+
+    if (action === 'approve') {
+      // If it's a Stripe subscription, cancel it in Stripe
+      if (donation.transactionDetails?.stripeSubscriptionId) {
+        try {
+          const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+          await stripe.subscriptions.del(donation.transactionDetails.stripeSubscriptionId);
+          console.log(`Cancelled Stripe subscription: ${donation.transactionDetails.stripeSubscriptionId}`);
+        } catch (stripeError) {
+          console.error("Error cancelling Stripe subscription:", stripeError);
+          // Continue with local cancellation even if Stripe fails
+        }
+      }
+
+      // Update donation status
+      donation.paymentStatus = "cancelled";
+      if (donation.recurringDetails) {
+        donation.recurringDetails.status = "cancelled";
+      }
+
+      // Send confirmation email
+      await sendCancellationConfirmationEmail(donation);
+    } else {
+      // Reject the cancellation request
+      donation.paymentStatus = "active";
+    }
+
+    await donation.save();
+
+    res.json({
+      status: "Success",
+      message: `Cancellation request ${action}ed successfully`,
+      donation,
+    });
+  } catch (error) {
+    console.error("Error processing cancellation request:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to process cancellation request",
+      error: error.message,
+    });
+  }
+};
+
+// Update the getDonations function to highlight pending cancellations
 exports.getDonations = async (req, res) => {
   try {
     const {
@@ -344,7 +468,7 @@ exports.getDonations = async (req, res) => {
       sortOrder = "desc",
     } = req.query;
 
-    // Build filter conditions (KEEP ORIGINAL)
+    // Build filter conditions
     const filter = {};
     if (status && status !== "All") {
       filter.paymentStatus = status;
@@ -352,7 +476,6 @@ exports.getDonations = async (req, res) => {
     if (type && type !== "All") {
       filter.paymentType = type;
     }
-    // Search in donor details or donation ID (KEEP ORIGINAL)
     if (search) {
       filter.$or = [
         { donationId: { $regex: search, $options: "i" } },
@@ -361,11 +484,11 @@ exports.getDonations = async (req, res) => {
       ];
     }
 
-    // Build sort configuration (KEEP ORIGINAL)
+    // Build sort configuration
     const sortConfig = {};
     sortConfig[sortBy] = sortOrder === "asc" ? 1 : -1;
 
-    // Execute query with pagination (KEEP ORIGINAL)
+    // Execute query with pagination
     const donations = await Order.find(filter)
       .sort(sortConfig)
       .skip((page - 1) * limit)
@@ -373,85 +496,52 @@ exports.getDonations = async (req, res) => {
       .populate("user", "name email")
       .lean();
 
-    // Get total count for pagination (KEEP ORIGINAL)
+    // Get total count for pagination
     const total = await Order.countDocuments(filter);
 
-    // Format donations with additional actual amount fields
-    const formattedDonations = await Promise.all(
-      donations.map(async (donation) => {
-        // Calculate actual amount based on payment type
-        let actualAmount = donation.totalAmount;
+    // Format donations with additional fields
+    const formattedDonations = donations.map((donation) => {
+      const formatted = {
+        id: donation._id,
+        ...donation,
+        donor: donation.donorDetails?.name,
+        email: donation.donorDetails?.email,
+        amount: donation.totalAmount,
+        cause: donation.items[0]?.title || "Multiple Items",
+        date: donation.createdAt,
+        type: donation.paymentType,
+        status: donation.paymentStatus,
+        nextPaymentDate:
+          donation.recurringDetails?.nextPaymentDate ||
+          donation.installmentDetails?.nextInstallmentDate,
+        // Add flag for pending cancellation
+        isPendingCancellation: donation.paymentStatus === "pending_cancellation",
+      };
 
-        // For installments
-        if (
-          donation.paymentType === "installments" &&
-          donation.installmentDetails
-        ) {
-          if (
-            donation.installmentDetails.installmentHistory &&
-            donation.installmentDetails.installmentHistory.length > 0
-          ) {
-            actualAmount = donation.installmentDetails.installmentHistory
-              .filter((payment) => payment.status === "completed")
-              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-          } else {
-            actualAmount =
-              (donation.installmentDetails.installmentsPaid || 0) *
-              (donation.installmentDetails.installmentAmount || 0);
-          }
+      // Add actual amount calculation
+      let actualAmount = donation.totalAmount;
+      if (donation.paymentType === "installments" && donation.installmentDetails) {
+        if (donation.installmentDetails.installmentHistory?.length > 0) {
+          actualAmount = donation.installmentDetails.installmentHistory
+            .filter((payment) => payment.status === "completed")
+            .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+        } else {
+          actualAmount =
+            (donation.installmentDetails.installmentsPaid || 0) *
+            (donation.installmentDetails.installmentAmount || 0);
         }
-        // For recurring
-        else if (
-          donation.paymentType === "recurring" &&
-          donation.recurringDetails
-        ) {
-          if (
-            donation.recurringDetails.paymentHistory &&
-            donation.recurringDetails.paymentHistory.length > 0
-          ) {
-            actualAmount = donation.recurringDetails.paymentHistory
-              .filter((payment) => payment.status === "succeeded")
-              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-          }
+      } else if (donation.paymentType === "recurring" && donation.recurringDetails) {
+        if (donation.recurringDetails.paymentHistory?.length > 0) {
+          actualAmount = donation.recurringDetails.paymentHistory
+            .filter((payment) => payment.status === "succeeded")
+            .reduce((sum, payment) => sum + (payment.amount || 0), 0);
         }
+      }
+      formatted.actualAmount = actualAmount;
 
-        // Format donation (KEEP ORIGINAL STRUCTURE)
-        return {
-          id: donation._id,
-          ...donation,
-          donor: donation.donorDetails?.name,
-          email: donation.donorDetails?.email,
-          amount: donation.totalAmount, // KEEP ORIGINAL for frontend compatibility
-          actualAmount: actualAmount, // Add new field for actual amount
-          cause: donation.items[0]?.title || "Multiple Items",
-          date: donation.createdAt,
-          type: donation.paymentType,
-          status: donation.paymentStatus,
-          nextPaymentDate:
-            donation.recurringDetails?.nextPaymentDate ||
-            donation.installmentDetails?.nextInstallmentDate,
-        };
-      })
-    );
-
-    // Log some details (optional)
-    console.log("Donations Fetched:");
-    console.log("Total Donations:", total);
-    console.log("Current Page:", page);
-    console.log("Limit:", limit);
-    console.log("Number of Donations Returned:", formattedDonations.length);
-    formattedDonations.slice(0, 3).forEach((donation, index) => {
-      console.log(`Donation ${index + 1}:`);
-      console.log("- ID:", donation.id);
-      console.log("- Donor:", donation.donor);
-      console.log("- Amount (reported):", donation.amount);
-      console.log("- Amount (actual):", donation.actualAmount);
-      console.log("- Type:", donation.type);
-      console.log("- Status:", donation.status);
-      console.log("---");
+      return formatted;
     });
 
-    // Keep original response format
     res.json({
       donations: formattedDonations,
       pagination: {
@@ -602,6 +692,130 @@ exports.getDonationById = async (req, res) => {
   }
 };
 
+const sendBankTransferApprovalEmail = async (donation) => {
+  try {
+    // Get user from the donation
+    const user = await User.findById(donation.user);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for donation:", donation.donationId);
+      return;
+    }
+
+    console.log("Attempting to send donation approval email to:", user.email);
+
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4a7c59;">Donation Approved</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>We are pleased to inform you that your bank transfer donation has been approved.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${donation.donationId}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
+        </div>
+
+        <p>You can download your tax receipt from the "My donations" page after logging in to your account.</p>
+        
+        <p>Thank you for your generous support!</p>
+      </div>
+    `;
+
+    const result = await sendEmail(
+      user.email,
+      emailBody,
+      "Donation Approved - Shahid Afridi Foundation"
+    );
+
+    if (!result.success) {
+      console.error("Failed to send donation approval email:", result.error);
+      console.error("Email details:", {
+        to: user.email,
+        subject: "Donation Approved - Shahid Afridi Foundation",
+        donationId: donation.donationId
+      });
+    } else {
+      console.log("Donation approval email sent successfully to:", user.email);
+    }
+  } catch (error) {
+    console.error("Error sending donation approval email:", error);
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+      donationId: donation.donationId
+    });
+  }
+};
+
+const sendBankTransferCancellationEmail = async (donation) => {
+  try {
+    // Get user from the donation
+    const user = await User.findById(donation.user);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for donation:", donation.donationId);
+      return;
+    }
+
+    console.log("Attempting to send donation cancellation email to:", user.email);
+
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #dc2626;">Donation Cancelled</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>We regret to inform you that your bank transfer donation has been cancelled.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${donation.donationId}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
+        </div>
+
+        <p>If you believe this is an error, please contact us at info@ShahidAfridiFoundation.org.au</p>
+        
+        <p>Thank you for your interest in supporting our cause.</p>
+      </div>
+    `;
+
+    const result = await sendEmail(
+      user.email,
+      emailBody,
+      "Donation Cancelled - Shahid Afridi Foundation"
+    );
+
+    if (!result.success) {
+      console.error("Failed to send donation cancellation email:", result.error);
+      console.error("Email details:", {
+        to: user.email,
+        subject: "Donation Cancelled - Shahid Afridi Foundation",
+        donationId: donation.donationId
+      });
+    } else {
+      console.log("Donation cancellation email sent successfully to:", user.email);
+    }
+  } catch (error) {
+    console.error("Error sending donation cancellation email:", error);
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+      donationId: donation.donationId
+    });
+  }
+};
+
 // Update donation status
 exports.updateDonationStatus = async (req, res) => {
   try {
@@ -638,6 +852,7 @@ exports.updateDonationStatus = async (req, res) => {
       });
     }
 
+    const oldStatus = donation.paymentStatus;
     donation.paymentStatus = paymentStatus;
 
     // If completing a payment that was in installments or recurring, update status
@@ -655,6 +870,19 @@ exports.updateDonationStatus = async (req, res) => {
     }
 
     await donation.save();
+
+    // Send appropriate email notifications for bank transfer donations
+    if (donation.paymentMethod === "bank") {
+      try {
+        if (paymentStatus === "completed" && oldStatus !== "completed") {
+          await sendBankTransferApprovalEmail(donation);
+        } else if (paymentStatus === "cancelled" && oldStatus !== "cancelled") {
+          await sendBankTransferCancellationEmail(donation);
+        }
+      } catch (emailError) {
+        console.error("Failed to send status update email:", emailError);
+      }
+    }
 
     res.json({
       status: "Success",

@@ -244,6 +244,92 @@ exports.resumeSubscription = async (req, res) => {
   }
 };
 
+const { sendEmail } = require("../services/emailUtil");
+const User = require("../models/user");
+
+// Helper function to send cancellation request emails
+const sendCancellationRequestEmail = async (subscription) => {
+  try {
+    // Get user from the subscription
+    const user = await User.findById(subscription.user);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for subscription:", subscription._id);
+      return;
+    }
+
+    // Send email to admin
+    const adminEmailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4a7c59;">Subscription Cancellation Request</h2>
+        
+        <p>A donor has requested to cancel their recurring donation.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Subscription Details:</h3>
+          <p><strong>Subscription ID:</strong> ${subscription._id}</p>
+          <p><strong>Donor Name:</strong> ${user.name}</p>
+          <p><strong>Donor Email:</strong> ${user.email}</p>
+          <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(2)} AUD</p>
+          <p><strong>Frequency:</strong> ${subscription.recurringDetails.frequency}</p>
+          <p><strong>Start Date:</strong> ${new Date(subscription.recurringDetails.startDate).toLocaleDateString()}</p>
+          <p><strong>Cancellation Reason:</strong> ${subscription.cancellationDetails?.reason || "Not provided"}</p>
+        </div>
+
+        <p>Please review this request and take appropriate action through the admin panel.</p>
+      </div>
+    `;
+
+    await sendEmail(
+      process.env.ADMIN_EMAIL || "momoashfaq@gmail.com", //THIS IS MARYAM'S EMAIL FOR TESTING
+      // Use the actual admin email here
+      //info@shahidafridifoundation.org.au is the actual admin email
+      adminEmailBody,
+      "Subscription Cancellation Request - Shahid Afridi Foundation"
+    );
+
+    // Send confirmation email to donor
+    const donorEmailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4a7c59;">Cancellation Request Received</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>We have received your request to cancel your recurring donation.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Subscription Details:</h3>
+          <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(2)} AUD</p>
+          <p><strong>Frequency:</strong> ${subscription.recurringDetails.frequency}</p>
+        </div>
+
+        <p>Our admin team will review your request and process it accordingly. You will receive another email once the cancellation is confirmed.</p>
+        
+        <p>Thank you for your support!</p>
+      </div>
+    `;
+
+    await sendEmail(
+      user.email,
+      donorEmailBody,
+      "Cancellation Request Received - Shahid Afridi Foundation"
+    );
+
+    console.log(`Cancellation request emails sent for subscription: ${subscription._id}`);
+    return true;
+  } catch (error) {
+    console.error("Error sending cancellation request emails:", error);
+    return false;
+  }
+};
+
 exports.cancelSubscription = async (req, res) => {
   try {
     const { subscriptionId } = req.params;
@@ -262,13 +348,13 @@ exports.cancelSubscription = async (req, res) => {
       });
     }
 
-    // If this is a Stripe subscription, get payment history before cancelling
+    // If this is a Stripe subscription, get payment history before setting to pending
     if (
       subscription.paymentType === "recurring" &&
       subscription.transactionDetails?.stripeSubscriptionId
     ) {
       try {
-        // Get all paid invoices for this subscription before cancelling
+        // Get all paid invoices for this subscription
         const invoices = await stripe.invoices.list({
           subscription: subscription.transactionDetails.stripeSubscriptionId,
           status: 'paid',
@@ -305,46 +391,33 @@ exports.cancelSubscription = async (req, res) => {
         }
       } catch (stripeError) {
         console.error("Error fetching Stripe payment history:", stripeError);
-        // Continue with cancellation even if getting history fails
-      }
-      
-      try {
-        // Cancel subscription in Stripe
-        await stripe.subscriptions.cancel(
-          subscription.transactionDetails.stripeSubscriptionId
-        );
-
-        console.log(
-          `Cancelled Stripe subscription: ${subscription.transactionDetails.stripeSubscriptionId}`
-        );
-      } catch (stripeError) {
-        console.error("Stripe subscription cancellation error:", stripeError);
-        return res.status(400).json({
-          status: "Error",
-          message: `Failed to cancel subscription in Stripe: ${stripeError.message}`,
-        });
+        // Continue with cancellation request even if getting history fails
       }
     }
 
-    // Update local subscription record
-    subscription.paymentStatus = "cancelled";
+    // Update local subscription record to pending_cancellation instead of cancelled
+    subscription.paymentStatus = "pending_cancellation";
     subscription.cancellationDetails = {
       date: new Date(),
       reason: reason || "User requested cancellation",
-      cancelledBy: req.user._id,
+      requestedBy: req.user._id,
+      status: "pending"
     };
 
     await subscription.save();
+    
+    // Send cancellation request emails
+    await sendCancellationRequestEmail(subscription);
 
     res.json({
       status: "Success",
-      message: "Subscription cancelled successfully",
+      message: "Cancellation request submitted successfully. Your request is pending admin approval.",
       subscription,
     });
   } catch (error) {
     res.status(500).json({
       status: "Error",
-      message: "Failed to cancel subscription",
+      message: "Failed to submit cancellation request",
       error: error.message,
     });
   }

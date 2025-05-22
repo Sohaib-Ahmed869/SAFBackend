@@ -32,12 +32,30 @@ exports.updateProfile = async (req, res) => {
 
     // Update address if provided
     if (address) {
-      user.address = {
-        street: address.street || user.address?.street,
-        city: address.city || user.address?.city,
-        state: address.state || user.address?.state,
-        postalCode: address.postalCode || user.address?.postalCode,
-      };
+      // Initialize address object if it doesn't exist
+      if (!user.address) {
+        user.address = {};
+      }
+      
+      // Only update fields that are explicitly provided
+      if (address.street !== undefined) {
+        user.address.street = address.street;
+      }
+      
+      if (address.city !== undefined) {
+        user.address.city = address.city;
+      }
+      
+      if (address.state !== undefined) {
+        user.address.state = address.state;
+      }
+      
+      if (address.postalCode !== undefined) {
+        user.address.postalCode = address.postalCode;
+      }
+      
+      // Log the address update for debugging
+      console.log('Updated user address:', user.address);
     }
 
     await user.save();
