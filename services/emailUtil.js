@@ -1,6 +1,6 @@
 // emailUtil.js
 const nodemailer = require("nodemailer");
-
+const path = require("path");
 // Configure the transporter for nodemailer
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",

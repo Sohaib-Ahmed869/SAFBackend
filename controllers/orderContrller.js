@@ -841,37 +841,47 @@ exports.createOrder = async (req, res) => {
           };
 
           if (subscription.status === "active") {
-            savedOrder.paymentStatus = "active";
+  savedOrder.paymentStatus = "active";
 
-            // Check if the first invoice was paid
-            if (
-              subscription.latest_invoice &&
-              subscription.latest_invoice.payment_intent &&
-              subscription.latest_invoice.payment_intent.status === "succeeded"
-            ) {
-              // Count this as the first payment
-              savedOrder.recurringDetails.totalPayments = 1;
+  // Check if the first invoice was paid
+  let firstInvoicePaid = false;
+  let paymentIntent = subscription.latest_invoice?.payment_intent;
 
-              // Add first payment to history
-              savedOrder.recurringDetails.paymentHistory = [
-                {
-                  date: new Date(),
-                  amount: totalAmount, // Use the full amount
-                  invoiceId: subscription.latest_invoice.id,
-                  status: "succeeded",
-                },
-              ];
+  if (paymentIntent && paymentIntent.status === "succeeded") {
+    firstInvoicePaid = true;
+  } else if (subscription.latest_invoice && paymentIntent && paymentIntent.status !== "succeeded") {
+    // Attempt to pay the invoice immediately if not already paid
+    try {
+      const paidInvoice = await stripe.invoices.pay(subscription.latest_invoice.id);
+      if (paidInvoice.payment_intent && paidInvoice.payment_intent.status === "succeeded") {
+        paymentIntent = paidInvoice.payment_intent;
+        firstInvoicePaid = true;
+      }
+    } catch (payErr) {
+      console.error("Failed to pay first recurring invoice immediately:", payErr);
+    }
+  }
 
-              try {
-                await sendReceiptEmail(savedOrder);
-              } catch (emailError) {
-                console.error("Failed to send receipt email:", emailError);
-              }
-            }
-          } else {
-            // For any non-active subscription (e.g. pending/incomplete), leave the status as pending.
-            savedOrder.paymentStatus = "pending";
-          }
+  if (firstInvoicePaid) {
+    savedOrder.recurringDetails.totalPayments = 1;
+    savedOrder.recurringDetails.paymentHistory = [
+      {
+        date: new Date(),
+        amount: totalAmount, // Use the full amount
+        invoiceId: subscription.latest_invoice.id,
+        status: "succeeded",
+      },
+    ];
+    try {
+      await sendReceiptEmail(savedOrder);
+    } catch (emailError) {
+      console.error("Failed to send receipt email:", emailError);
+    }
+  }
+} else {
+  // For any non-active subscription (e.g. pending/incomplete), leave the status as pending.
+  savedOrder.paymentStatus = "pending";
+}
 
           await savedOrder.save();
         } else if (paymentType === "installments") {
@@ -1114,7 +1124,7 @@ exports.getOrderById = async (req, res) => {
 
 exports.updateOrderStatus = async (req, res) => {
   try {
-    const { paymentStatus, transactionDetails } = req.body;
+    const { paymentStatus, transactionDetails, recurringStatus } = req.body;
     const order = await Order.findById(req.params.id);
 
     if (!order) {
@@ -1124,9 +1134,36 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    order.paymentStatus = paymentStatus;
+    // Update payment status if provided
+    if (paymentStatus) {
+      order.paymentStatus = paymentStatus;
+    }
+    
+    // Update transaction details if provided
     if (transactionDetails) {
       order.transactionDetails = transactionDetails;
+    }
+    
+    // Handle recurring donations
+    if (order.paymentType === 'recurring') {
+      // Initialize recurringDetails if it doesn't exist
+      if (!order.recurringDetails) {
+        order.recurringDetails = {
+          status: 'active', // Default status for new recurring donations
+          startDate: new Date(),
+          nextPaymentDate: calculateNextBillingDate(new Date(), order.recurringDetails?.frequency || 'monthly')
+        };
+      }
+      
+      // Update recurring status if provided
+      if (recurringStatus) {
+        order.recurringDetails.status = recurringStatus;
+      }
+      
+      // If this is a new approval, ensure the status is set to active
+      if (paymentStatus === 'completed' && !recurringStatus) {
+        order.recurringDetails.status = 'active';
+      }
     }
 
     await order.save();
@@ -1134,6 +1171,7 @@ exports.updateOrderStatus = async (req, res) => {
     // Create log entry
     await createLog("UPDATE", "ORDER", order._id, req.user, req, {
       paymentStatus,
+      ...(recurringStatus && { recurringStatus })
     });
 
     res.json({
