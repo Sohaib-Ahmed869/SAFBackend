@@ -245,6 +245,7 @@ exports.resumeSubscription = async (req, res) => {
 };
 
 const { sendEmail } = require("../services/emailUtil");
+const { sendReceiptEmail } = require("../services/recieptUtils");
 const User = require("../models/user");
 
 // Helper function to send cancellation request emails
@@ -284,7 +285,7 @@ const sendCancellationRequestEmail = async (subscription) => {
     `;
 
     await sendEmail(
-      process.env.ADMIN_EMAIL || "momoashfaq@gmail.com", //THIS IS MARYAM'S EMAIL FOR TESTING
+      process.env.ADMIN_EMAIL || "info@shahidafridifoundation.org.au", //THIS IS MARYAM'S EMAIL FOR TESTING
       // Use the actual admin email here
       //info@shahidafridifoundation.org.au is the actual admin email
       adminEmailBody,
@@ -998,6 +999,16 @@ async function handleInvoicePaymentSucceeded(invoice) {
         console.log(
           `Updated order ${order._id} with successful payment for invoice ${invoice.id}`
         );
+
+        // Send receipt email for successful payment
+        if (order.paymentType === 'recurring' || order.paymentType === 'installments') {
+          try {
+            const result = await sendReceiptEmail(order);
+            console.log(`Sent receipt email for order ${order._id}:`, result.message);
+          } catch (emailError) {
+            console.error('Failed to send receipt email:', emailError);
+          }
+        }
       } else {
         console.log(`No order found for subscription ${invoice.subscription}`);
       }

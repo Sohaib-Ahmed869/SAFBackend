@@ -19,6 +19,9 @@ const subscriptionRoutesAdmin = require("./routes/admin/subscription.routes");
 const eventRoutesAdmin = require("./routes/admin/event.routes");
 const joinRoutes = require("./routes/joinRoutes");
 const newsLetter = require("./models/newsletter");
+const productRoutes = require("./routes/productRoutes");
+const fs = require('fs');
+const path = require('path');
 const setupInstallmentProcessingJob = require("./jobs/processInstallments");
 const {
   scheduleSubscriptionChecks,
@@ -42,6 +45,9 @@ app.use(
       "https://shahidafridifoundation.org.au",
       "https://www.shahidafridifoundation.org.au",
     ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
   })
 );
 app.use(express.json());
@@ -49,6 +55,23 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.send("API is running...");
 });
+// Ensure uploads directory exists
+const uploadsBaseDir = path.join(__dirname, 'public/uploads');
+const uploadsProductsDir = path.join(uploadsBaseDir, 'products');
+
+[uploadsBaseDir, uploadsProductsDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// Make uploads directory publicly accessible
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), {
+  setHeaders: (res, path) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+}));
+
 // Routes
 app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
@@ -63,6 +86,7 @@ app.use("/api/admin/donors", donorController);
 app.use("/api/admin/subscriptions", subscriptionRoutesAdmin);
 app.use("/api/admin/events", eventRoutesAdmin);
 app.use("/api/join", joinRoutes);
+app.use("/api/products", productRoutes);
 app.post("/api/newsletter", async (req, res) => {
   const { email } = req.body;
   const existingSubscriber = await newsLetter.findOne({ email });
@@ -83,8 +107,7 @@ app.get("/api/newsletters", async (req, res) => {
 // Error handling
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5000;
-
+const PORT = process.env.PORT || 5001;  // Changed from 5000 to 5001
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

@@ -279,7 +279,7 @@ const sendCancellationRequestEmail = async (order) => {
     `;
 
     await sendEmail(
-      "momoashfaq@gmail.com", //THIS IS MARYAM'S EMAIL FOR TESTING
+      "info@shahidafridifoundation.org.au", //THIS IS MARYAM'S EMAIL FOR TESTING
       // Use the actual admin email here
       //info@shahidafridifoundation.org.au is the actual admin email
       adminEmailBody,
