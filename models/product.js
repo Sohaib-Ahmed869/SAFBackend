@@ -24,7 +24,7 @@ const productSchema = new mongoose.Schema({
     category: {
         type: String,
         required: true,
-        enum: ['education', 'food', 'emergencies', 'water', 'healthcare', 'shelter'],
+        enum: ['education', 'food', 'emergencies', 'water'],
         default: 'general'
     },
     image: {
