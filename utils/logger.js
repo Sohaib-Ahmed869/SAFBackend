@@ -15,7 +15,7 @@ const logger = {
     console.error(`[${timestamp}] [ERROR] ${message}`);
     if (error) {
       if (error instanceof Error) {
-        console.error(`${error.message}`);
+        console.error(`${error.message}`); 
         console.error(error.stack);
       } else {
         console.error(error);

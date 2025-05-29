@@ -775,7 +775,7 @@ exports.createOrder = async (req, res) => {
             },
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
-            billing_cycle_anchor: Math.floor(today.getTime() / 1000), // Start from today
+            ...(interval === 'month' ? { billing_cycle_anchor: calculateBillingAnchor(billingDay) } : {}),
             proration_behavior: "none", // Don't prorate when making changes
           };
 
@@ -812,8 +812,8 @@ exports.createOrder = async (req, res) => {
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
             // Use the billing day to calculate the proper anchor date
-            billing_cycle_anchor: calculateBillingAnchor(billingDay),
-            proration_behavior: "none",
+            ...(interval === 'month' ? { billing_cycle_anchor: calculateBillingAnchor(billingDay) } : {}),
+              proration_behavior: "none",
             // Add metadata to track billing day
             ...(recurringDetails.endDate
               ? {
@@ -1526,7 +1526,7 @@ const calculateNextPaymentDate = (startDate, frequency, billingDay = null) => {
       nextDate.setDate(nextDate.getDate() + 7);
       break;
     case "monthly":
-      // Move to next month
+      // Move to next month 
       nextDate.setMonth(nextDate.getMonth() + 1);
 
       // If billing day is specified, use that date instead of current day
