@@ -40,14 +40,16 @@ const generateReceiptPDF = async (
 
       // Add logos
       doc.image(path.join(__dirname, "../public/images/logo.png"), 50, 45, {
-        width: 80,
+        width: 100,
       });
 
       doc.image(
         path.join(__dirname, "../public/images/tax-deductible.png"),
         450,
         45,
-        { width: 100 }
+        { width: 100,
+          height: 50
+         }
       );
 
       // Add header
@@ -108,15 +110,8 @@ const generateReceiptPDF = async (
 
       // Create table data based on payment type and options
       const tableData = getTableData(order, installmentNumber, paidOnly);
-
-      // Draw table with separate header handling for better control
-      let lastY = createTableWithSeparateHeader(
-        doc,
-        headerData,
-        tableData,
-        50,
-        doc.y
-      );
+   
+     
 
       // Calculate total amount
       let totalAmount = 0;
@@ -124,11 +119,7 @@ const generateReceiptPDF = async (
         totalAmount += parseFloat(row.amount.replace("$", ""));
       });
 
-      // Add total amount
-      doc.y = lastY + 10;
-      doc.fontSize(9)
-      .text(`Total Amount: $ ${totalAmount}`);
-
+     
       // Add payment details
       doc.moveDown(2);
       doc
@@ -790,7 +781,7 @@ const createEmailBody = (order, totalAmount, installmentNumber) => {
               } installments</p>`
             : ""
         }
-      </div>
+      </div> 
       
       <p>Your official tax-deductible receipt is attached to this email. Please keep it for your tax records.</p>
       
