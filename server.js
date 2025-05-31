@@ -20,6 +20,7 @@ const eventRoutesAdmin = require("./routes/admin/event.routes");
 const joinRoutes = require("./routes/joinRoutes");
 const newsLetter = require("./models/newsletter");
 const productRoutes = require("./routes/productRoutes");
+const donationtyperoute = require("./routes/donationtyperoute");
 const fs = require('fs');
 const path = require('path');
 const setupInstallmentProcessingJob = require("./jobs/processInstallments");
@@ -87,6 +88,7 @@ app.use("/api/admin/subscriptions", subscriptionRoutesAdmin);
 app.use("/api/admin/events", eventRoutesAdmin);
 app.use("/api/join", joinRoutes);
 app.use("/api/products", productRoutes);
+app.use("/api/donationtypes", donationtyperoute);
 app.post("/api/newsletter", async (req, res) => {
   const { email } = req.body;
   const existingSubscriber = await newsLetter.findOne({ email });
