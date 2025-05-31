@@ -2,10 +2,13 @@
 const User = require("../models/user");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
+require('dotenv').config();
 const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { sendEmail } = require("../services/emailUtil");
+
+const INSTAGRAM_ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -619,6 +622,19 @@ exports.updatePassword = async (req, res) => {
       message: "Could not update password",
       error: error.message,
     });
+  }
+};
+
+exports.instagramFeed=async(req,res)=>{
+  try { 
+    const response = await fetch(
+      `https://graph.instagram.com/me/media?fields=id,caption,media_url,thumbnail_url,media_type&access_token=${INSTAGRAM_ACCESS_TOKEN}`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch Instagram feed' });
   }
 };
 

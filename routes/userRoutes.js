@@ -17,4 +17,5 @@ router.get("/check-password-status", auth, userController.checkPasswordStatus);
 router.put("/update", auth, userController.updateUser);
 router.put("/update-password", auth, userController.updatePassword);
 
+router.get("/instagram-feed",userController.instagramFeed)
 module.exports = router;

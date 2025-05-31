@@ -6,7 +6,7 @@ const { sendReceiptEmail } = require("../services/recieptUtils");
 const { sendEmail } = require("../services/emailUtil");
 const crypto = require("crypto");
 const bcrypt = require("bcrypt");
-const { upload } = require("../config/s3");
+const { upload } = require("../config/s3");  
 const path = require("path");
 const axios = require("axios");
 
@@ -152,9 +152,33 @@ const generateUniqueDonationId = async (
   );
 };
 
+// const calculateBillingAnchor = (billingDay) => {
+//   const today = new Date();
+//   // Normalize billing day to valid range for month
+//   const currentMonth = today.getMonth();
+//   const currentYear = today.getFullYear();
+//   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+//   const normalizedBillingDay = Math.min(billingDay, daysInMonth);
+
+//   // Create date for this month's billing day
+//   let billingDate = new Date(currentYear, currentMonth, normalizedBillingDay);
+
+//   // If the billing day has already passed this month, move to next month
+//   if (today > billingDate) {
+//     billingDate.setMonth(billingDate.getMonth() + 1);
+//     // Adjust for different month lengths
+//     const nextMonthDays = new Date(
+//       billingDate.getFullYear(),
+//       billingDate.getMonth() + 1,
+//       0
+//     ).getDate();
+//     billingDate.setDate(Math.min(normalizedBillingDay, nextMonthDays));
+//   }
+
+//   return Math.floor(billingDate.getTime() / 1000);
+// };
 const calculateBillingAnchor = (billingDay) => {
   const today = new Date();
-  // Normalize billing day to valid range for month
   const currentMonth = today.getMonth();
   const currentYear = today.getFullYear();
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
@@ -164,7 +188,7 @@ const calculateBillingAnchor = (billingDay) => {
   let billingDate = new Date(currentYear, currentMonth, normalizedBillingDay);
 
   // If the billing day has already passed this month, move to next month
-  if (today > billingDate) {
+  if (today.getDate() >= normalizedBillingDay) {
     billingDate.setMonth(billingDate.getMonth() + 1);
     // Adjust for different month lengths
     const nextMonthDays = new Date(
@@ -175,9 +199,35 @@ const calculateBillingAnchor = (billingDay) => {
     billingDate.setDate(Math.min(normalizedBillingDay, nextMonthDays));
   }
 
+  // FIXED: Ensure the billing date is not more than 1 month from now
+  const maxAllowedDate = new Date(today);
+  maxAllowedDate.setMonth(maxAllowedDate.getMonth() + 1);
+  maxAllowedDate.setDate(today.getDate()); // Keep the same day of month
+  
+  if (billingDate > maxAllowedDate) {
+    // If calculated date is too far, use next month on the same day as today
+    billingDate = new Date(today);
+    billingDate.setMonth(billingDate.getMonth() + 1);
+  }
+
+  // Additional safety check: ensure billing date is not more than 31 days from now
+  const maxDaysFromNow = 31;
+  const maxTimestamp = today.getTime() + (maxDaysFromNow * 24 * 60 * 60 * 1000);
+  
+  if (billingDate.getTime() > maxTimestamp) {
+    // Fallback: use exactly 30 days from now
+    billingDate = new Date(today.getTime() + (30 * 24 * 60 * 60 * 1000));
+  }
+
+  console.log(`Billing anchor calculation:
+    Today: ${today.toISOString()}
+    Requested billing day: ${billingDay}
+    Calculated billing date: ${billingDate.toISOString()}
+    Unix timestamp: ${Math.floor(billingDate.getTime() / 1000)}
+  `);
+
   return Math.floor(billingDate.getTime() / 1000);
 };
-
 const sendBankTransferPendingEmail = async (order) => {
   try {
     // Get user from the order
