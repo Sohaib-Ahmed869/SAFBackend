@@ -626,7 +626,7 @@ exports.updatePassword = async (req, res) => {
 };
 
 exports.instagramFeed=async(req,res)=>{
-  try { 
+  try {
     const response = await fetch(
       `https://graph.instagram.com/me/media?fields=id,caption,media_url,thumbnail_url,media_type&access_token=${INSTAGRAM_ACCESS_TOKEN}`
     );

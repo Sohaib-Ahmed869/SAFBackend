@@ -827,8 +827,7 @@ exports.createOrder = async (req, res) => {
             },
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
-            ...(interval === 'month' ? { billing_cycle_anchor: calculateBillingAnchor(billingDay) } : {}),
-            proration_behavior: "none", // Don't prorate when making changes
+            proration_behavior: "none", 
           };
 
           if (recurringDetails.endDate) {
@@ -863,9 +862,8 @@ exports.createOrder = async (req, res) => {
             },
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
-            // Use the billing day to calculate the proper anchor date
-            ...(interval === 'month' ? { billing_cycle_anchor: calculateBillingAnchor(billingDay) } : {}),
-              proration_behavior: "none",
+            // Removed billing_cycle_anchor to allow immediate first payment
+            proration_behavior: "none",
             // Add metadata to track billing day
             ...(recurringDetails.endDate
               ? {
@@ -893,47 +891,93 @@ exports.createOrder = async (req, res) => {
           };
 
           if (subscription.status === "active") {
-  savedOrder.paymentStatus = "active";
+            savedOrder.paymentStatus = "active";
 
-  // Check if the first invoice was paid
-  let firstInvoicePaid = false;
-  let paymentIntent = subscription.latest_invoice?.payment_intent;
+            // Check if the first invoice was paid
+            let firstInvoicePaid = false;
+            let paymentIntent = subscription.latest_invoice?.payment_intent;
 
-  if (paymentIntent && paymentIntent.status === "succeeded") {
-    firstInvoicePaid = true;
-  } else if (subscription.latest_invoice && paymentIntent && paymentIntent.status !== "succeeded") {
-    // Attempt to pay the invoice immediately if not already paid
-    try {
-      const paidInvoice = await stripe.invoices.pay(subscription.latest_invoice.id);
-      if (paidInvoice.payment_intent && paidInvoice.payment_intent.status === "succeeded") {
-        paymentIntent = paidInvoice.payment_intent;
-        firstInvoicePaid = true;
-      }
-    } catch (payErr) {
-      console.error("Failed to pay first recurring invoice immediately:", payErr);
-    }
-  }
+            if (paymentIntent && paymentIntent.status === "succeeded") {
+              firstInvoicePaid = true;
+            } else if (subscription.latest_invoice && paymentIntent && paymentIntent.status !== "succeeded") {
+              // Attempt to pay the invoice immediately if not already paid
+              try {
+                const paidInvoice = await stripe.invoices.pay(subscription.latest_invoice.id);
+                if (paidInvoice.payment_intent && paidInvoice.payment_intent.status === "succeeded") {
+                  paymentIntent = paidInvoice.payment_intent;
+                  firstInvoicePaid = true;
+                }
+              } catch (payErr) {
+                console.error("Failed to pay first recurring invoice immediately:", payErr);
+              }
+            }
 
-  if (firstInvoicePaid) {
-    savedOrder.recurringDetails.totalPayments = 1;
-    savedOrder.recurringDetails.paymentHistory = [
-      {
-        date: new Date(),
-        amount: totalAmount, // Use the full amount
-        invoiceId: subscription.latest_invoice.id,
-        status: "succeeded",
-      },
-    ];
-    try {
-      await sendReceiptEmail(savedOrder);
-    } catch (emailError) {
-      console.error("Failed to send receipt email:", emailError);
-    }
-  }
-} else {
-  // For any non-active subscription (e.g. pending/incomplete), leave the status as pending.
-  savedOrder.paymentStatus = "pending";
-}
+            if (firstInvoicePaid) {
+              savedOrder.recurringDetails.totalPayments = 1;
+              savedOrder.recurringDetails.lastPaymentDate = new Date();
+              savedOrder.recurringDetails.paymentHistory = [
+                {
+                  date: new Date(),
+                  amount: totalAmount,
+                  invoiceId: subscription.latest_invoice.id,
+                  status: "succeeded",
+                },
+              ];
+              
+              // Set next payment date using billing anchor for monthly
+              if (interval === 'month') {
+                savedOrder.recurringDetails.nextPaymentDate = new Date(calculateBillingAnchor(billingDay) * 1000);
+              }
+              
+              try {
+                await sendReceiptEmail(savedOrder);
+              } catch (emailError) {
+                console.error("Failed to send receipt email:", emailError);
+              }
+            }
+          } else if (subscription.status === "incomplete") {
+            savedOrder.paymentStatus = "pending";
+            
+            if (subscription.latest_invoice?.payment_intent) {
+              try {
+                const confirmedPI = await stripe.paymentIntents.confirm(
+                  subscription.latest_invoice.payment_intent.id,
+                  { payment_method: stripePaymentMethodId }
+                );
+                
+                if (confirmedPI.status === "succeeded") {
+                  const updatedSubscription = await stripe.subscriptions.retrieve(subscription.id);
+                  if (updatedSubscription.status === "active") {
+                    savedOrder.paymentStatus = "active";
+                    savedOrder.recurringDetails.totalPayments = 1;
+                    savedOrder.recurringDetails.lastPaymentDate = new Date();
+                    savedOrder.recurringDetails.paymentHistory = [
+                      {
+                        date: new Date(),
+                        amount: totalAmount,
+                        invoiceId: subscription.latest_invoice.id,
+                        status: "succeeded",
+                      },
+                    ];
+                    
+                    if (interval === 'month') {
+                      savedOrder.recurringDetails.nextPaymentDate = new Date(calculateBillingAnchor(billingDay) * 1000);
+                    }
+                    
+                    try {
+                      await sendReceiptEmail(savedOrder);
+                    } catch (emailError) {
+                      console.error("Failed to send receipt email:", emailError);
+                    }
+                  }
+                }
+              } catch (confirmError) {
+                console.error("Failed to confirm payment intent:", confirmError);
+              }
+            }
+          } else {
+            savedOrder.paymentStatus = "pending";
+          }
 
           await savedOrder.save();
         } else if (paymentType === "installments") {
@@ -1081,10 +1125,10 @@ exports.createOrder = async (req, res) => {
     }
 
     if (paymentMethod === "bank") {
-        try {
+      try {
         await sendBankTransferPendingEmail(savedOrder);
         console.log(`Bank transfer pending email sent for order: ${savedOrder.donationId}`);
-        } catch (emailError) {
+      } catch (emailError) {
         console.error("Failed to send bank transfer pending email:", emailError);
       }
     }
