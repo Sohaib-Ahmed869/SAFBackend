@@ -432,7 +432,7 @@ exports.createOrder = async (req, res) => {
       paymentType,
       adminCostContribution,
       donorDetails,
-      paymentMethod, // "visa", "mastercard", or "bank"
+      paymentMethod,
       totalAmount,
       recurringDetails,
       installmentDetails,
