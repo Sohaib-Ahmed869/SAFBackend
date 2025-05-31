@@ -111,14 +111,24 @@ const generateReceiptPDF = async (
       // Create table data based on payment type and options
       const tableData = getTableData(order, installmentNumber, paidOnly);
    
-     
+     // Draw table with separate header handling for better controlAdd commentMore actions
+      let lastY = createTableWithSeparateHeader(
+        doc,
+        headerData,
+        tableData,
+        50,
+        doc.y
+      );
 
       // Calculate total amount
       let totalAmount = 0;
       tableData.forEach((row) => {
         totalAmount += parseFloat(row.amount.replace("$", ""));
       });
-
+// Add total amount
+      doc.y = lastY + 10;
+      doc.fontSize(9)
+      .text(`Total Amount: $ ${totalAmount}`);
      
       // Add payment details
       doc.moveDown(2);
