@@ -1078,15 +1078,25 @@ async function handleInvoicePaymentFailed(invoice) {
 // Handler for subscription updates
 async function handleSubscriptionUpdated(subscription) {
   try {
+    console.log(`Processing subscription update: ${subscription.id}, status: ${subscription.status}`);
+
     const order = await Order.findOne({
       "transactionDetails.stripeSubscriptionId": subscription.id,
     });
 
     if (order) {
+      console.log(`Found order ${order._id} for subscription ${subscription.id}`);
+
       // Update status based on Stripe subscription status
       switch (subscription.status) {
         case "active":
-          order.paymentStatus = "active";
+          // Only set to active if not manually cancelled by user
+          if (order.paymentStatus !== "pending_cancellation") {
+            order.paymentStatus = "active";
+            if (order.recurringDetails) {
+              order.recurringDetails.status = "active";
+            }
+          }
           break;
         case "past_due":
           order.paymentStatus = "past_due";
@@ -1095,13 +1105,46 @@ async function handleSubscriptionUpdated(subscription) {
           order.paymentStatus = "failed";
           break;
         case "canceled":
-          order.paymentStatus = "cancelled";
-          break;
-        case "paused":
-          order.paymentStatus = "paused";
-          break;
-        default:
-          // No change
+          console.log(`Subscription canceled. Checking reason...`);
+          console.log(`Cancel at timestamp: ${subscription.cancel_at}`);
+          console.log(`Cancel at reason: ${subscription.cancellation_details?.reason}`);
+
+          // Check if this was cancelled due to reaching the scheduled end date
+          const wasScheduledToEnd = subscription.cancel_at &&
+            subscription.cancellation_details?.reason === 'cancellation_requested';
+
+          // Also check our order's end date
+          let reachedEndDate = false;
+          if (order.recurringDetails && order.recurringDetails.endDate) {
+            const now = new Date();
+            const endDate = new Date(order.recurringDetails.endDate);
+            const timeDiff = Math.abs(now.getTime() - endDate.getTime());
+            const daysDiff = Math.ceil(timeDiff / (1000 * 3600 * 24));
+
+            // If within 2 days of end date, consider it a natural end
+            reachedEndDate = daysDiff <= 2;
+            console.log(`End date: ${endDate}, Days diff: ${daysDiff}, Reached end: ${reachedEndDate}`);
+          }
+
+          // Check if subscription had a cancel_at date that was reached
+          const cancelAtReached = subscription.cancel_at &&
+            (new Date().getTime() / 1000) >= subscription.cancel_at;
+
+          if (reachedEndDate || cancelAtReached || wasScheduledToEnd) {
+            // This was a planned end, mark as completed
+            order.paymentStatus = "completed";
+            if (order.recurringDetails) {
+              order.recurringDetails.status = "completed";
+            }
+            console.log(`Subscription ${subscription.id} completed naturally`);
+          } else {
+            // This was a manual/early cancellation
+            order.paymentStatus = "cancelled";
+            if (order.recurringDetails) {
+              order.recurringDetails.status = "cancelled";
+            }
+            console.log(`Subscription ${subscription.id} was manually cancelled`);
+          }
           break;
       }
 
@@ -1112,13 +1155,14 @@ async function handleSubscriptionUpdated(subscription) {
         stripeCancelAt: subscription.cancel_at
           ? new Date(subscription.cancel_at * 1000)
           : null,
+        stripeCancellationReason: subscription.cancellation_details?.reason || null,
         stripePauseCollection: subscription.pause_collection
           ? {
-              behavior: subscription.pause_collection.behavior,
-              resumesAt: subscription.pause_collection.resumes_at
-                ? new Date(subscription.pause_collection.resumes_at * 1000)
-                : null,
-            }
+            behavior: subscription.pause_collection.behavior,
+            resumesAt: subscription.pause_collection.resumes_at
+              ? new Date(subscription.pause_collection.resumes_at * 1000)
+              : null,
+          }
           : null,
       };
 
