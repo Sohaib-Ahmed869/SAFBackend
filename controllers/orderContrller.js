@@ -6,7 +6,7 @@ const { sendReceiptEmail } = require("../services/recieptUtils");
 const { sendEmail } = require("../services/emailUtil");
 const crypto = require("crypto");
 const bcrypt = require("bcrypt");
-const { upload } = require("../config/s3");  
+const { upload } = require("../config/s3");
 const path = require("path");
 const axios = require("axios");
 
@@ -203,7 +203,7 @@ const calculateBillingAnchor = (billingDay) => {
   const maxAllowedDate = new Date(today);
   maxAllowedDate.setMonth(maxAllowedDate.getMonth() + 1);
   maxAllowedDate.setDate(today.getDate()); // Keep the same day of month
-  
+
   if (billingDate > maxAllowedDate) {
     // If calculated date is too far, use next month on the same day as today
     billingDate = new Date(today);
@@ -212,11 +212,11 @@ const calculateBillingAnchor = (billingDay) => {
 
   // Additional safety check: ensure billing date is not more than 31 days from now
   const maxDaysFromNow = 31;
-  const maxTimestamp = today.getTime() + (maxDaysFromNow * 24 * 60 * 60 * 1000);
-  
+  const maxTimestamp = today.getTime() + maxDaysFromNow * 24 * 60 * 60 * 1000;
+
   if (billingDate.getTime() > maxTimestamp) {
     // Fallback: use exactly 30 days from now
-    billingDate = new Date(today.getTime() + (30 * 24 * 60 * 60 * 1000));
+    billingDate = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
   }
 
   console.log(`Billing anchor calculation:
@@ -237,7 +237,10 @@ const sendBankTransferPendingEmail = async (order) => {
       return;
     }
 
-    console.log("Attempting to send bank transfer pending email to:", user.email);
+    console.log(
+      "Attempting to send bank transfer pending email to:",
+      user.email
+    );
 
     const emailBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -254,7 +257,9 @@ const sendBankTransferPendingEmail = async (order) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${order.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(
+            order.createdAt
+          ).toLocaleDateString()}</p>
           <p><strong>Amount:</strong> $${order.totalAmount.toFixed(2)} AUD</p>
         </div>
 
@@ -262,7 +267,9 @@ const sendBankTransferPendingEmail = async (order) => {
           <h3 style="margin-top: 0; color: #856404;">Next Steps:</h3>
           <p>To complete your donation, please either:</p>
           <ol style="padding-left: 20px;">
-            <li>Upload proof of payment through our website using your donation ID: ${order.donationId}</li>
+            <li>Upload proof of payment through our website using your donation ID: ${
+              order.donationId
+            }</li>
             <li>Email your payment proof to: info@ShahidAfridiFoundation.org.au</li>
           </ol>
           <p>Your donation will be processed once we receive and verify your payment proof.</p>
@@ -279,21 +286,27 @@ const sendBankTransferPendingEmail = async (order) => {
     );
 
     if (!result.success) {
-      console.error("Failed to send bank transfer pending email:", result.error);
+      console.error(
+        "Failed to send bank transfer pending email:",
+        result.error
+      );
       console.error("Email details:", {
         to: user.email,
         subject: "Bank Transfer Donation Pending - Shahid Afridi Foundation",
-        donationId: order.donationId
+        donationId: order.donationId,
       });
     } else {
-      console.log("Bank transfer pending email sent successfully to:", user.email);
+      console.log(
+        "Bank transfer pending email sent successfully to:",
+        user.email
+      );
     }
   } catch (error) {
     console.error("Error sending bank transfer pending email:", error);
     console.error("Error details:", {
       message: error.message,
       stack: error.stack,
-      donationId: order.donationId
+      donationId: order.donationId,
     });
   }
 };
@@ -321,7 +334,9 @@ const sendCancellationRequestEmail = async (order) => {
           <p><strong>Donor Email:</strong> ${user.email}</p>
           <p><strong>Amount:</strong> $${order.totalAmount.toFixed(2)} AUD</p>
           <p><strong>Frequency:</strong> ${order.recurringDetails.frequency}</p>
-          <p><strong>Start Date:</strong> ${new Date(order.recurringDetails.startDate).toLocaleDateString()}</p>
+          <p><strong>Start Date:</strong> ${new Date(
+            order.recurringDetails.startDate
+          ).toLocaleDateString()}</p>
         </div>
 
         <p>Please review this request and take appropriate action through the admin panel.</p>
@@ -330,9 +345,9 @@ const sendCancellationRequestEmail = async (order) => {
 
     await sendEmail(
       "info@shahidafridifoundation.org.au",
-       //THIS IS MARYAM'S EMAIL FOR TESTING
+      //THIS IS MARYAM'S EMAIL FOR TESTING
       // Use the actual admin email here
-      
+
       //info@shahidafridifoundation.org.au is the actual admin email
       adminEmailBody,
       "Subscription Cancellation Request - Shahid Afridi Foundation"
@@ -366,7 +381,9 @@ const sendCancellationRequestEmail = async (order) => {
       "Cancellation Request Received - Shahid Afridi Foundation"
     );
 
-    console.log(`Cancellation request emails sent for order: ${order.donationId}`);
+    console.log(
+      `Cancellation request emails sent for order: ${order.donationId}`
+    );
   } catch (error) {
     console.error("Error sending cancellation request emails:", error);
   }
@@ -412,8 +429,8 @@ exports.requestCancellation = async (req, res) => {
       message: "Cancellation request submitted successfully",
       order: {
         donationId: order.donationId,
-        paymentStatus: order.paymentStatus
-      }
+        paymentStatus: order.paymentStatus,
+      },
     });
   } catch (error) {
     console.error("Error processing cancellation request:", error);
@@ -460,7 +477,6 @@ exports.createOrder = async (req, res) => {
         const userUpdates = {
           name: donorDetails.name,
           phone: donorDetails.phone,
-          
         };
         await User.findByIdAndUpdate(user._id, userUpdates);
         console.log(`Updated user details for user ${user._id}`);
@@ -525,11 +541,9 @@ exports.createOrder = async (req, res) => {
         name: donorDetails.name,
         phone: donorDetails.phone,
         email: donorDetails.email,
-        
       });
     }
- console.log("Donor Details2", donorDetails);
-
+    console.log("Donor Details2", donorDetails);
 
     // Process items array
     const processedItems = items.map((item) => ({
@@ -827,7 +841,7 @@ exports.createOrder = async (req, res) => {
             },
             default_payment_method: stripePaymentMethodId,
             expand: ["latest_invoice.payment_intent"],
-            proration_behavior: "none", 
+            proration_behavior: "none",
           };
 
           if (recurringDetails.endDate) {
@@ -899,16 +913,28 @@ exports.createOrder = async (req, res) => {
 
             if (paymentIntent && paymentIntent.status === "succeeded") {
               firstInvoicePaid = true;
-            } else if (subscription.latest_invoice && paymentIntent && paymentIntent.status !== "succeeded") {
+            } else if (
+              subscription.latest_invoice &&
+              paymentIntent &&
+              paymentIntent.status !== "succeeded"
+            ) {
               // Attempt to pay the invoice immediately if not already paid
               try {
-                const paidInvoice = await stripe.invoices.pay(subscription.latest_invoice.id);
-                if (paidInvoice.payment_intent && paidInvoice.payment_intent.status === "succeeded") {
+                const paidInvoice = await stripe.invoices.pay(
+                  subscription.latest_invoice.id
+                );
+                if (
+                  paidInvoice.payment_intent &&
+                  paidInvoice.payment_intent.status === "succeeded"
+                ) {
                   paymentIntent = paidInvoice.payment_intent;
                   firstInvoicePaid = true;
                 }
               } catch (payErr) {
-                console.error("Failed to pay first recurring invoice immediately:", payErr);
+                console.error(
+                  "Failed to pay first recurring invoice immediately:",
+                  payErr
+                );
               }
             }
 
@@ -923,12 +949,14 @@ exports.createOrder = async (req, res) => {
                   status: "succeeded",
                 },
               ];
-              
+
               // Set next payment date using billing anchor for monthly
-              if (interval === 'month') {
-                savedOrder.recurringDetails.nextPaymentDate = new Date(calculateBillingAnchor(billingDay) * 1000);
+              if (interval === "month") {
+                savedOrder.recurringDetails.nextPaymentDate = new Date(
+                  calculateBillingAnchor(billingDay) * 1000
+                );
               }
-              
+
               try {
                 await sendReceiptEmail(savedOrder);
               } catch (emailError) {
@@ -937,16 +965,17 @@ exports.createOrder = async (req, res) => {
             }
           } else if (subscription.status === "incomplete") {
             savedOrder.paymentStatus = "pending";
-            
+
             if (subscription.latest_invoice?.payment_intent) {
               try {
                 const confirmedPI = await stripe.paymentIntents.confirm(
                   subscription.latest_invoice.payment_intent.id,
                   { payment_method: stripePaymentMethodId }
                 );
-                
+
                 if (confirmedPI.status === "succeeded") {
-                  const updatedSubscription = await stripe.subscriptions.retrieve(subscription.id);
+                  const updatedSubscription =
+                    await stripe.subscriptions.retrieve(subscription.id);
                   if (updatedSubscription.status === "active") {
                     savedOrder.paymentStatus = "active";
                     savedOrder.recurringDetails.totalPayments = 1;
@@ -959,20 +988,28 @@ exports.createOrder = async (req, res) => {
                         status: "succeeded",
                       },
                     ];
-                    
-                    if (interval === 'month') {
-                      savedOrder.recurringDetails.nextPaymentDate = new Date(calculateBillingAnchor(billingDay) * 1000);
+
+                    if (interval === "month") {
+                      savedOrder.recurringDetails.nextPaymentDate = new Date(
+                        calculateBillingAnchor(billingDay) * 1000
+                      );
                     }
-                    
+
                     try {
                       await sendReceiptEmail(savedOrder);
                     } catch (emailError) {
-                      console.error("Failed to send receipt email:", emailError);
+                      console.error(
+                        "Failed to send receipt email:",
+                        emailError
+                      );
                     }
                   }
                 }
               } catch (confirmError) {
-                console.error("Failed to confirm payment intent:", confirmError);
+                console.error(
+                  "Failed to confirm payment intent:",
+                  confirmError
+                );
               }
             }
           } else {
@@ -1127,9 +1164,14 @@ exports.createOrder = async (req, res) => {
     if (paymentMethod === "bank") {
       try {
         await sendBankTransferPendingEmail(savedOrder);
-        console.log(`Bank transfer pending email sent for order: ${savedOrder.donationId}`);
+        console.log(
+          `Bank transfer pending email sent for order: ${savedOrder.donationId}`
+        );
       } catch (emailError) {
-        console.error("Failed to send bank transfer pending email:", emailError);
+        console.error(
+          "Failed to send bank transfer pending email:",
+          emailError
+        );
       }
     }
 
@@ -1234,31 +1276,34 @@ exports.updateOrderStatus = async (req, res) => {
     if (paymentStatus) {
       order.paymentStatus = paymentStatus;
     }
-    
+
     // Update transaction details if provided
     if (transactionDetails) {
       order.transactionDetails = transactionDetails;
     }
-    
+
     // Handle recurring donations
-    if (order.paymentType === 'recurring') {
+    if (order.paymentType === "recurring") {
       // Initialize recurringDetails if it doesn't exist
       if (!order.recurringDetails) {
         order.recurringDetails = {
-          status: 'active', // Default status for new recurring donations
+          status: "active", // Default status for new recurring donations
           startDate: new Date(),
-          nextPaymentDate: calculateNextBillingDate(new Date(), order.recurringDetails?.frequency || 'monthly')
+          nextPaymentDate: calculateNextBillingDate(
+            new Date(),
+            order.recurringDetails?.frequency || "monthly"
+          ),
         };
       }
-      
+
       // Update recurring status if provided
       if (recurringStatus) {
         order.recurringDetails.status = recurringStatus;
       }
-      
+
       // If this is a new approval, ensure the status is set to active
-      if (paymentStatus === 'completed' && !recurringStatus) {
-        order.recurringDetails.status = 'active';
+      if (paymentStatus === "completed" && !recurringStatus) {
+        order.recurringDetails.status = "active";
       }
     }
 
@@ -1267,7 +1312,7 @@ exports.updateOrderStatus = async (req, res) => {
     // Create log entry
     await createLog("UPDATE", "ORDER", order._id, req.user, req, {
       paymentStatus,
-      ...(recurringStatus && { recurringStatus })
+      ...(recurringStatus && { recurringStatus }),
     });
 
     res.json({
@@ -1416,17 +1461,23 @@ exports.getOrderStats = async (req, res) => {
           return sum + order.totalAmount;
         }
         // Add remaining installment amounts for active installment orders
-        if (order.paymentType === "installments" && 
-            order.installmentDetails && 
-            order.installmentDetails.status === "active") {
-          const totalInstallments = order.installmentDetails.numberOfInstallments;
-          const paidInstallments = order.installmentDetails.installmentsPaid || 0;
+        if (
+          order.paymentType === "installments" &&
+          order.installmentDetails &&
+          order.installmentDetails.status === "active"
+        ) {
+          const totalInstallments =
+            order.installmentDetails.numberOfInstallments;
+          const paidInstallments =
+            order.installmentDetails.installmentsPaid || 0;
           const remainingInstallments = totalInstallments - paidInstallments;
           const installmentAmount = order.installmentDetails.installmentAmount;
-          
+
           // Calculate remaining amount
           const remainingAmount = remainingInstallments * installmentAmount;
-          console.log(`Order ${order.donationId}: ${remainingInstallments} installments remaining of $${installmentAmount} each = $${remainingAmount}`);
+          console.log(
+            `Order ${order.donationId}: ${remainingInstallments} installments remaining of $${installmentAmount} each = $${remainingAmount}`
+          );
           return sum + remainingAmount;
         }
         return sum;
@@ -1622,7 +1673,7 @@ const calculateNextPaymentDate = (startDate, frequency, billingDay = null) => {
       nextDate.setDate(nextDate.getDate() + 7);
       break;
     case "monthly":
-      // Move to next month 
+      // Move to next month
       nextDate.setMonth(nextDate.getMonth() + 1);
 
       // If billing day is specified, use that date instead of current day
@@ -1914,16 +1965,16 @@ exports.uploadReceipt = [
       });
     } catch (error) {
       console.error("Error uploading receipt:", error);
-      
+
       // Handle specific error cases
-      if (error.code === 'LIMIT_FILE_SIZE') {
+      if (error.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({
           success: false,
           message: "File size must be less than 5MB",
         });
       }
-      
-      if (error.message === 'Only image files are allowed!') {
+
+      if (error.message === "Only image files are allowed!") {
         return res.status(400).json({
           success: false,
           message: "Only JPG, PNG, and GIF files are allowed",
@@ -1931,7 +1982,7 @@ exports.uploadReceipt = [
       }
 
       // Handle S3-specific errors
-      if (error.name === 'S3Error' || error.name === 'NoSuchBucket') {
+      if (error.name === "S3Error" || error.name === "NoSuchBucket") {
         return res.status(500).json({
           success: false,
           message: "Storage service error. Please try again later.",
