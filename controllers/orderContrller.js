@@ -1289,10 +1289,7 @@ exports.updateOrderStatus = async (req, res) => {
         order.recurringDetails = {
           status: "active", // Default status for new recurring donations
           startDate: new Date(),
-          nextPaymentDate: calculateNextBillingDate(
-            new Date(),
-            order.recurringDetails?.frequency || "monthly"
-          ),
+          nextPaymentDate: calculateNextPaymentDate(new Date(), order.recurringDetails?.frequency || 'monthly')
         };
       }
 
