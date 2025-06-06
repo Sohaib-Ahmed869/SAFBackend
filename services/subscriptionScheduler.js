@@ -5,6 +5,84 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const cron = require("node-cron");
 
 /**
+ * Sync payment history for a subscription with Stripe
+ */
+const syncSubscriptionPaymentHistory = async (subscription) => {
+  try {
+    const subscriptionId = subscription.transactionDetails.stripeSubscriptionId;
+
+    // Get all paid invoices for this subscription from Stripe
+    const invoices = await stripe.invoices.list({
+      subscription: subscriptionId,
+      status: "paid",
+      limit: 100,
+    });
+
+    // Get existing payment history invoice IDs
+    const existingInvoiceIds = new Set(
+      (subscription.recurringDetails.paymentHistory || [])
+        .map((p) => p.invoiceId)
+        .filter((id) => id)
+    );
+
+    let newPaymentsAdded = 0;
+
+    // Process each invoice from Stripe
+    for (const invoice of invoices.data) {
+      // Skip if we already have this payment recorded
+      if (existingInvoiceIds.has(invoice.id)) {
+        continue;
+      }
+
+      // Initialize payment history if it doesn't exist
+      if (!subscription.recurringDetails.paymentHistory) {
+        subscription.recurringDetails.paymentHistory = [];
+      }
+
+      // Add the payment to history
+      subscription.recurringDetails.paymentHistory.push({
+        date: new Date(invoice.status_transitions.paid_at * 1000),
+        amount: invoice.amount_paid / 100, // Convert from cents
+        invoiceId: invoice.id,
+        status: "succeeded",
+      });
+
+      newPaymentsAdded++;
+    }
+
+    if (newPaymentsAdded > 0) {
+      // Update totals
+      const successfulPayments =
+        subscription.recurringDetails.paymentHistory.filter(
+          (p) => p.status === "succeeded"
+        );
+
+      subscription.recurringDetails.totalPayments = successfulPayments.length;
+
+      // Update last payment date
+      if (successfulPayments.length > 0) {
+        const latestPayment = successfulPayments.reduce((latest, current) =>
+          new Date(current.date) > new Date(latest.date) ? current : latest
+        );
+        subscription.recurringDetails.lastPaymentDate = latestPayment.date;
+      }
+
+      console.log(
+        `Added ${newPaymentsAdded} new payments for subscription ${subscription.donationId}`
+      );
+    }
+
+    return newPaymentsAdded;
+  } catch (error) {
+    console.error(
+      `Error syncing payment history for subscription ${subscription.donationId}:`,
+      error
+    );
+    return 0;
+  }
+};
+
+/**
  * Scheduled task to sync subscription statuses with Stripe and update accordingly
  */
 const scheduleSubscriptionChecks = () => {
@@ -34,6 +112,9 @@ const scheduleSubscriptionChecks = () => {
           const stripeSubscription = await stripe.subscriptions.retrieve(
             subscription.transactionDetails.stripeSubscriptionId
           );
+
+          // SYNC PAYMENT HISTORY - This is the key addition!
+          await syncSubscriptionPaymentHistory(subscription);
 
           console.log(`Stripe subscription data for ${subscription._id}:`);
 
@@ -139,6 +220,8 @@ const scheduleSubscriptionChecks = () => {
               `Successfully updated subscription ${subscription._id}`
             );
           } else {
+            // Even if status didn't change, we might have updated payment history, so save
+            await subscription.save();
             console.log(
               `No status change needed for subscription ${subscription._id}`
             );
