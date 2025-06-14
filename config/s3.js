@@ -34,7 +34,7 @@ const eventsUpload = multer({
   storage: multerS3(createUploadConfig("events")),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB file size limit
   fileFilter: function (req, file, cb) {
-    const filetypes = /jpeg|jpg|png|gif/;
+    const filetypes = /jpeg|jpg|png|gif|pdf/;
     const mimetype = filetypes.test(file.mimetype);
     const extname = filetypes.test(
       path.extname(file.originalname).toLowerCase()
@@ -43,16 +43,16 @@ const eventsUpload = multer({
     if (mimetype && extname) {
       return cb(null, true);
     }
-    cb(new Error("Only image files are allowed!"));
+    cb(new Error("Only image files and PDFs are allowed!"));
   },
-});
+});   
 
 // Configure multer for Product uploads
 const productUpload = multer({
   storage: multerS3(createUploadConfig("products")),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB file size limit
   fileFilter: function (req, file, cb) {
-    const filetypes = /jpeg|jpg|png|gif/;
+    const filetypes = /jpeg|jpg|png|gif|pdf/;
     const mimetype = filetypes.test(file.mimetype);
     const extname = filetypes.test(
       path.extname(file.originalname).toLowerCase()
@@ -61,7 +61,7 @@ const productUpload = multer({
     if (mimetype && extname) {
       return cb(null, true);
     }
-    cb(new Error("Only image files are allowed!"));
+    cb(new Error("Only image files and PDFs are allowed!"));
   },
 });
 

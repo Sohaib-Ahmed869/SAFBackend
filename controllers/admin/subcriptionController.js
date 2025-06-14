@@ -250,66 +250,134 @@ exports.getPendingCancellationRequests = async (req, res) => {
 };
 
 // Get Dashboard Stats
+// Get Dashboard Stats
 exports.getDashboardStats = async (req, res) => {
   try {
-    // Get active subscriptions and MRR
-    const subscriptionStats = await Order.aggregate([
-      {
-        $match: {
-          paymentType: "recurring",
-          paymentStatus: "active",
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          activeSubscriptions: { $sum: 1 },
-          monthlyRecurringRevenue: {
-            $sum: {
-              $cond: [
-                { $eq: ["$recurringDetails.frequency", "monthly"] },
-                "$recurringDetails.amount",
-                {
-                  $cond: [
-                    { $eq: ["$recurringDetails.frequency", "weekly"] },
-                    { $multiply: ["$recurringDetails.amount", 4] },
-                    { $multiply: ["$recurringDetails.amount", 30] }, // daily
-                  ],
-                },
-              ],
-            },
-          },
-        },
-      },
-    ]);
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-    // Get total subscriptions for retention rate
-    const totalSubscriptions = await Order.countDocuments({
-      paymentType: "recurring",
-    });
+    // Get all valid orders (excluding failed)
+    const allOrders = await Order.find({
+      paymentStatus: { $ne: "failed" }
+    }).lean();
 
-    // Get lifetime value calculation
-    const lifetimeValue = await Order.aggregate([
-      {
-        $match: {
-          paymentType: "recurring",
-        },
-      },
-      {
-        $group: {
-          _id: "$user",
-          totalValue: { $sum: "$totalAmount" },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          avgLifetimeValue: { $avg: "$totalValue" },
-        },
-      },
-    ]);
+    console.log("=== SUBSCRIPTION STATS CALCULATION ===");
+    console.log("Total valid orders found:", allOrders.length);
 
-    // Get subscription growth trend
+    // Initialize stats
+    let activeSubscriptions = 0;
+    let monthlyRecurringRevenue = 0;
+    let totalRecurringOrders = 0;
+    let activeRecurringOrders = 0;
+
+    // Process each order to calculate MRR and active subscriptions
+    await Promise.all(
+      allOrders.map(async (order) => {
+        // Count total recurring/installment orders
+        if (order.paymentType === "recurring" || order.paymentType === "installments") {
+          totalRecurringOrders++;
+
+          // Count active subscriptions
+          if (order.paymentStatus === "active" || order.paymentStatus === "completed") {
+            activeRecurringOrders++;
+
+            // Calculate MRR only from orders with actual payments
+            if (order.paymentType === "recurring" && order.recurringDetails) {
+              // Check if there are successful payments
+              let hasSuccessfulPayments = false;
+              
+              if (order.recurringDetails.paymentHistory && 
+                  Array.isArray(order.recurringDetails.paymentHistory)) {
+                hasSuccessfulPayments = order.recurringDetails.paymentHistory.some(
+                  p => p.status === "succeeded" || p.status === "completed"
+                );
+              }
+
+              // Try Stripe if no local payment history
+              if (!hasSuccessfulPayments && order.transactionDetails?.stripeSubscriptionId) {
+                try {
+                  const invoices = await stripe.invoices.list({
+                    subscription: order.transactionDetails.stripeSubscriptionId,
+                    status: "paid",
+                    limit: 1,
+                  });
+                  hasSuccessfulPayments = invoices.data.length > 0;
+                } catch (stripeError) {
+                  console.error("Error checking Stripe invoices:", stripeError);
+                }
+              }
+
+              // Add to MRR only if there are successful payments
+              if (hasSuccessfulPayments && order.recurringDetails.amount && order.recurringDetails.frequency) {
+                activeSubscriptions++;
+                
+                const amount = order.recurringDetails.amount;
+                const frequency = order.recurringDetails.frequency;
+                
+                let monthlyAmount = 0;
+                switch (frequency.toLowerCase()) {
+                  case "monthly":
+                    monthlyAmount = amount;
+                    break;
+                  case "weekly":
+                    monthlyAmount = amount * 4.33; // Average weeks per month
+                    break;
+                  case "yearly":
+                    monthlyAmount = amount / 12;
+                    break;
+                  case "quarterly":
+                    monthlyAmount = amount / 3;
+                    break;
+                  case "daily":
+                    monthlyAmount = amount * 30; // Average days per month
+                    break;
+                  default:
+                    monthlyAmount = amount; // Default to monthly
+                }
+                
+                monthlyRecurringRevenue += monthlyAmount;
+                console.log(`Added ${monthlyAmount} to MRR from recurring (${frequency})`);
+              }
+            }
+            else if (order.paymentType === "installments" && order.installmentDetails) {
+              // Check if there are completed installments
+              let hasCompletedInstallments = false;
+              
+              if (order.installmentDetails.installmentHistory && 
+                  Array.isArray(order.installmentDetails.installmentHistory)) {
+                hasCompletedInstallments = order.installmentDetails.installmentHistory.some(
+                  installment => installment.status === "completed"
+                );
+              } else if (order.installmentDetails.installmentsPaid > 0) {
+                hasCompletedInstallments = true;
+              }
+
+              // Add to MRR only if there are completed installments
+              if (hasCompletedInstallments && order.installmentDetails.installmentAmount) {
+                activeSubscriptions++;
+                monthlyRecurringRevenue += order.installmentDetails.installmentAmount;
+                console.log(`Added ${order.installmentDetails.installmentAmount} to MRR from installments`);
+              }
+            }
+          }
+        }
+      })
+    );
+
+    // Calculate retention rate (active vs total recurring orders)
+    const retentionRate = totalRecurringOrders > 0 
+      ? (activeRecurringOrders / totalRecurringOrders) * 100 
+      : 0;
+
+    // Calculate average lifetime value for recurring orders
+    const recurringOrders = allOrders.filter(order => 
+      order.paymentType === "recurring" || order.paymentType === "installments"
+    );
+    
+    const avgLifetimeValue = recurringOrders.length > 0
+      ? recurringOrders.reduce((sum, order) => sum + order.totalAmount, 0) / recurringOrders.length
+      : 0;
+
+    // Get subscription growth trend (last 6 months)
     const currentDate = new Date();
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(currentDate.getMonth() - 6);
@@ -317,7 +385,7 @@ exports.getDashboardStats = async (req, res) => {
     const monthlyTrend = await Order.aggregate([
       {
         $match: {
-          paymentType: "recurring",
+          paymentStatus: { $ne: "failed" },
           createdAt: { $gte: sixMonthsAgo },
         },
       },
@@ -327,8 +395,37 @@ exports.getDashboardStats = async (req, res) => {
             year: { $year: "$createdAt" },
             month: { $month: "$createdAt" },
           },
-          subscribers: { $sum: 1 },
-          amount: { $sum: "$totalAmount" },
+          totalAmount: { $sum: "$totalAmount" },
+          totalOrders: { $sum: 1 },
+          recurringOrders: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ["$paymentType", "recurring"] },
+                    { $eq: ["$paymentType", "installments"] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
+          oneTimeOrders: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ["$paymentType", "single"] },
+                    { $eq: ["$paymentType", "one_time"] },
+                    { $eq: ["$paymentType", null] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          }
         },
       },
       {
@@ -336,31 +433,40 @@ exports.getDashboardStats = async (req, res) => {
       },
     ]);
 
-   // Format trend data properly including the year
-const trendData = monthlyTrend.map((item) => ({
-  month: new Date(item._id.year, item._id.month - 1).toLocaleString(
-    "default",
-    { month: "short" }
-  ),
-  year: item._id.year, // Make sure to include the year
-  amount: item.amount,
-  subscribers: item.subscribers,
-}));
+    // Format trend data properly including the year
+    const trendData = monthlyTrend.map((item) => ({
+      month: new Date(item._id.year, item._id.month - 1).toLocaleString(
+        "default",
+        { month: "long" }
+      ),
+      year: item._id.year,
+      amount: item.totalAmount,
+      count: item.totalOrders,
+      recurring: item.recurringOrders,
+      oneTime: item.oneTimeOrders,
+    }));
 
+    console.log("=== SUBSCRIPTION STATS RESULTS ===");
+    console.log("Active Subscriptions:", activeSubscriptions);
+    console.log("Monthly Recurring Revenue:", monthlyRecurringRevenue);
+    console.log("Total Recurring Orders:", totalRecurringOrders);
+    console.log("Active Recurring Orders:", activeRecurringOrders);
+    console.log("Retention Rate:", retentionRate);
+    console.log("Avg Lifetime Value:", avgLifetimeValue);
 
     const stats = {
-      activeSubscriptions: subscriptionStats[0]?.activeSubscriptions || 0,
-      monthlyRecurringRevenue:
-        subscriptionStats[0]?.monthlyRecurringRevenue || 0,
-      retentionRate: subscriptionStats[0]
-        ? (subscriptionStats[0].activeSubscriptions / totalSubscriptions) * 100
-        : 0,
-      avgLifetimeValue: lifetimeValue[0]?.avgLifetimeValue || 0,
-      trendData,
+      activeSubscriptions: activeSubscriptions,
+      monthlyRecurringRevenue: monthlyRecurringRevenue,
+      retentionRate: retentionRate,
+      avgLifetimeValue: avgLifetimeValue,
+      totalRecurringOrders: totalRecurringOrders,
+      activeRecurringOrders: activeRecurringOrders,
+      trendData: trendData,
     };
 
     res.json({ status: "Success", data: { stats } });
   } catch (error) {
+    console.error("Error in subscription dashboard stats:", error);
     res.status(500).json({
       status: "Error",
       message: "Failed to fetch subscription statistics",

@@ -7,135 +7,344 @@ exports.getDashboardStats = async (req, res) => {
   try {
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-    // Get total donations amount - KEEP ORIGINAL QUERY STRUCTURE
-    const totalDonations = await Order.aggregate([
-      {
-        $match: {
-          paymentStatus: { $in: ["completed", "active"] },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$totalAmount" },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
+    // Get all orders
+    const allOrders = await Order.find({}).lean();
 
-    // Get recurring donations count - KEEP ORIGINAL QUERY
-    const recurringDonations = await Order.countDocuments({
-      paymentType: { $in: ["recurring", "installments"] },
-      paymentStatus: { $in: ["completed", "active"] },
-    });
+    // Filter out failed orders for all calculations
+    const validOrders = allOrders.filter(order => order.paymentStatus !== "failed");
 
-    // KEEP ORIGINAL SUCCESS RATE CALCULATION but fix any division by zero issues
-    const completedDonations = await Order.countDocuments({
-      paymentStatus: "completed",
-    });
-    const totalCount = await Order.countDocuments();
-    const successRate =
-      totalCount > 0 ? (completedDonations / totalCount) * 100 : 0;
+    console.log("=== DEBUGGING DASHBOARD STATS ===");
+    console.log("Total orders found:", allOrders.length);
+    console.log("Valid orders (excluding failed):", validOrders.length);
 
-    // Process actual payments behind the scenes to get real totals
-    let actualTotalAmount = 0;
+    // Initialize stats
+    let totalDonated = 0; // Total expected amount (including future payments)
+    let paidDonated = 0;  // Amount actually received/paid
+    let pendingAmount = 0; // Remaining amount to be received
+    let activeRecurring = 0;
+    let recurringCount = 0;
+    let oneTimeCount = 0;
+    let installmentCount = 0;
+    let completedDonationsCount = 0;
+    let monthlyRecurringRevenue = 0; // Monthly revenue from paid recurring transactions
 
-    // Get all completed/active orders
-    const allOrders = await Order.find({
-      paymentStatus: { $in: ["completed", "active"] },
-    }).lean();
+    // Helper function to calculate total expected amount for recurring donations
+    const calculateRecurringTotalAmount = (order) => {
+      if (!order.recurringDetails) return 0;
 
-    // Calculate actual payments
+      const { amount, frequency, startDate, endDate } = order.recurringDetails;
+      
+      if (!startDate || !endDate) {
+        // If no end date specified, use totalPayments if available
+        const totalPaymentsMade = order.recurringDetails.totalPayments || 1;
+        return totalPaymentsMade * amount;
+      }
+
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      
+      // Calculate total expected payments based on frequency
+      let totalPayments = 0;
+      
+      switch (frequency.toLowerCase()) {
+        case 'daily':
+          totalPayments = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+          break;
+        case 'weekly':
+          totalPayments = Math.ceil((end - start) / (1000 * 60 * 60 * 24 * 7)) + 1;
+          break;
+        case 'monthly':
+          const monthsDiff = (end.getFullYear() - start.getFullYear()) * 12 + 
+                            (end.getMonth() - start.getMonth()) + 1;
+          totalPayments = monthsDiff;
+          break;
+        case 'yearly':
+          totalPayments = end.getFullYear() - start.getFullYear() + 1;
+          break;
+        default:
+          totalPayments = order.recurringDetails.totalPayments || 1;
+      }
+
+      return totalPayments * amount;
+    };
+
+    // Process each valid order
     await Promise.all(
-      allOrders.map(async (order) => {
-        // For one-time payments, use the total amount directly
-        if (order.paymentType === "single") {
-          actualTotalAmount += order.totalAmount;
+      validOrders.map(async (order) => {
+        console.log(`\nProcessing order ${order._id}:`, {
+          paymentType: order.paymentType,
+          paymentStatus: order.paymentStatus,
+          totalAmount: order.totalAmount
+        });
+
+        // Count donation types
+        if (order.paymentType === "single" || order.paymentType === "one_time" || !order.paymentType) {
+          oneTimeCount++;
+        } else if (order.paymentType === "recurring") {
+          recurringCount++;
+        } else if (order.paymentType === "installments") {
+          installmentCount++;
         }
-        // For recurring payments with Stripe, get actual payment history
-        else if (
-          order.paymentType === "recurring" &&
-          order.transactionDetails?.stripeSubscriptionId &&
-          (order.paymentMethod === "visa" ||
-            order.paymentMethod === "mastercard")
-        ) {
-          try {
-            const invoices = await stripe.invoices.list({
-              subscription: order.transactionDetails.stripeSubscriptionId,
-              status: "paid",
-              limit: 100,
-            });
 
-            const paidAmount = invoices.data.reduce(
-              (sum, invoice) => sum + invoice.amount_paid / 100,
-              0
-            );
+        // Count completed donations
+        if (order.paymentStatus === "completed") {
+          completedDonationsCount++;
+        }
 
-            actualTotalAmount += paidAmount;
-          } catch (stripeError) {
-            console.error("Error fetching Stripe invoice data:", stripeError);
-
-            // Fallback to using local payment history
-            if (
-              order.recurringDetails &&
-              order.recurringDetails.paymentHistory &&
-              order.recurringDetails.paymentHistory.length > 0
-            ) {
-              const paidAmount = order.recurringDetails.paymentHistory
-                .filter((payment) => payment.status === "succeeded")
-                .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-
-              actualTotalAmount += paidAmount;
-            } else {
-              // Just add one payment if active
-              actualTotalAmount += order.totalAmount;
+        // Calculate amounts based on payment type
+        if (order.paymentType === "single" || order.paymentType === "one_time" || !order.paymentType) {
+          // One-time donations
+          totalDonated += order.totalAmount;
+          
+          if (order.paymentStatus === "completed" || order.paymentStatus === "succeeded") {
+            paidDonated += order.totalAmount;
+            console.log(`  -> One-time completed: added ${order.totalAmount} to paidDonated`);
+          }
+        }
+        else if (order.paymentType === "installments" && order.installmentDetails) {
+          // For installments
+          if (order.paymentStatus === "cancelled") {
+            // If cancelled, only count paid installments
+            const paidInstallments = order.installmentDetails.installmentsPaid || 0;
+            const paidAmount = paidInstallments * order.installmentDetails.installmentAmount;
+            totalDonated += paidAmount;
+            paidDonated += paidAmount;
+            console.log(`  -> Cancelled installment: added ${paidAmount} (${paidInstallments} payments)`);
+          } else {
+            // Total expected amount for installments
+            const totalExpectedAmount = 
+              order.installmentDetails.numberOfInstallments * 
+              order.installmentDetails.installmentAmount;
+            totalDonated += totalExpectedAmount;
+            
+            // Actually paid installments
+            const paidInstallments = order.installmentDetails.installmentsPaid || 0;
+            const paidAmount = paidInstallments * order.installmentDetails.installmentAmount;
+            paidDonated += paidAmount;
+            
+            console.log(`  -> Installment: total=${totalExpectedAmount}, paid=${paidAmount}`);
+            
+            // Add to monthly recurring revenue if there are completed payments
+            if (paidInstallments > 0) {
+              monthlyRecurringRevenue += order.installmentDetails.installmentAmount;
+              console.log(`  -> Added ${order.installmentDetails.installmentAmount} to MRR from installments`);
             }
           }
-        }
-        // For installments, count completed installments
-        else if (
-          order.paymentType === "installments" &&
-          order.installmentDetails
-        ) {
-          if (
-            order.installmentDetails.installmentHistory &&
-            order.installmentDetails.installmentHistory.length > 0
-          ) {
-            const completedAmount = order.installmentDetails.installmentHistory
-              .filter((payment) => payment.status === "completed")
-              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
 
-            actualTotalAmount += completedAmount;
-          } else {
-            // Use installments paid
-            actualTotalAmount +=
-              (order.installmentDetails.installmentsPaid || 0) *
-              (order.installmentDetails.installmentAmount || 0);
+          // Count as active if not cancelled or completed
+          if (order.paymentStatus === "active" || order.paymentStatus === "pending") {
+            activeRecurring++;
           }
         }
-        // For recurring without proper tracking, use total amount
-        else if (order.paymentType === "recurring") {
-          actualTotalAmount += order.totalAmount;
+        else if (order.paymentType === "recurring" && order.recurringDetails) {
+          // For recurring donations
+          try {
+            if (order.paymentStatus === "cancelled") {
+              // If cancelled, only count what was actually paid
+              let actuallyPaid = 0;
+              
+              if (order.transactionDetails?.stripeSubscriptionId &&
+                  (order.paymentMethod === "visa" || order.paymentMethod === "mastercard")) {
+                const invoices = await stripe.invoices.list({
+                  subscription: order.transactionDetails.stripeSubscriptionId,
+                  status: "paid",
+                  limit: 100,
+                });
+                actuallyPaid = invoices.data.reduce(
+                  (sum, invoice) => sum + invoice.amount_paid / 100,
+                  0
+                );
+              } else if (order.recurringDetails.paymentHistory && 
+                         order.recurringDetails.paymentHistory.length > 0) {
+                actuallyPaid = order.recurringDetails.paymentHistory
+                  .filter((payment) => payment.status === "succeeded" || payment.status === "completed")
+                  .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+              } else {
+                const totalPaymentsMade = order.recurringDetails.totalPayments || 0;
+                actuallyPaid = totalPaymentsMade * order.recurringDetails.amount;
+              }
+              
+              totalDonated += actuallyPaid;
+              paidDonated += actuallyPaid;
+              console.log(`  -> Cancelled recurring: added ${actuallyPaid} (actually paid)`);
+            } else {
+              // Calculate total expected amount
+              const totalExpectedAmount = calculateRecurringTotalAmount(order);
+              totalDonated += totalExpectedAmount;
+              
+              // Get actually paid amount
+              let actuallyPaid = 0;
+              
+              if (order.transactionDetails?.stripeSubscriptionId &&
+                  (order.paymentMethod === "visa" || order.paymentMethod === "mastercard")) {
+                const invoices = await stripe.invoices.list({
+                  subscription: order.transactionDetails.stripeSubscriptionId,
+                  status: "paid",
+                  limit: 100,
+                });
+                actuallyPaid = invoices.data.reduce(
+                  (sum, invoice) => sum + invoice.amount_paid / 100,
+                  0
+                );
+              } else if (order.recurringDetails.paymentHistory && 
+                         order.recurringDetails.paymentHistory.length > 0) {
+                actuallyPaid = order.recurringDetails.paymentHistory
+                  .filter((payment) => payment.status === "succeeded" || payment.status === "completed")
+                  .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+              } else if (order.paymentStatus === "active" || 
+                        order.paymentStatus === "completed") {
+                const totalPaymentsMade = order.recurringDetails.totalPayments || 0;
+                actuallyPaid = totalPaymentsMade * order.recurringDetails.amount;
+              }
+              
+              paidDonated += actuallyPaid;
+              console.log(`  -> Recurring: total=${totalExpectedAmount}, paid=${actuallyPaid}`);
+              
+              // Add to monthly recurring revenue if there are successful payments
+              if (actuallyPaid > 0 && order.recurringDetails.amount && order.recurringDetails.frequency) {
+                const amount = order.recurringDetails.amount;
+                const frequency = order.recurringDetails.frequency;
+                
+                let monthlyAmount = 0;
+                switch (frequency.toLowerCase()) {
+                  case "monthly":
+                    monthlyAmount = amount;
+                    break;
+                  case "weekly":
+                    monthlyAmount = amount * 4.33; // Average weeks per month
+                    break;
+                  case "yearly":
+                    monthlyAmount = amount / 12;
+                    break;
+                  case "quarterly":
+                    monthlyAmount = amount / 3;
+                    break;
+                  default:
+                    monthlyAmount = amount; // Default to monthly
+                }
+                
+                monthlyRecurringRevenue += monthlyAmount;
+                console.log(`  -> Added ${monthlyAmount} to MRR from recurring (${frequency})`);
+              }
+            }
+
+            // Count as active if not cancelled or completed
+            if (order.paymentStatus === "active" || order.paymentStatus === "pending") {
+              activeRecurring++;
+            }
+            
+          } catch (stripeError) {
+            console.error("Error fetching Stripe payment data:", stripeError);
+            // Fallback logic (same as in your user stats)
+            if (order.paymentStatus === "cancelled") {
+              let actuallyPaid = 0;
+              if (order.recurringDetails && order.recurringDetails.paymentHistory) {
+                actuallyPaid = order.recurringDetails.paymentHistory
+                  .filter((payment) => payment.status === "succeeded" || payment.status === "completed")
+                  .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+              } else {
+                const totalPaymentsMade = order.recurringDetails?.totalPayments || 0;
+                actuallyPaid = totalPaymentsMade * (order.recurringDetails?.amount || 0);
+              }
+              totalDonated += actuallyPaid;
+              paidDonated += actuallyPaid;
+            } else {
+              const totalExpectedAmount = calculateRecurringTotalAmount(order);
+              totalDonated += totalExpectedAmount;
+              
+              let actuallyPaid = 0;
+              if (order.recurringDetails && order.recurringDetails.paymentHistory) {
+                actuallyPaid = order.recurringDetails.paymentHistory
+                  .filter((payment) => payment.status === "succeeded" || payment.status === "completed")
+                  .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+              } else if (order.paymentStatus !== "failed") {
+                const totalPaymentsMade = order.recurringDetails?.totalPayments || 0;
+                actuallyPaid = totalPaymentsMade * (order.recurringDetails?.amount || 0);
+              }
+              paidDonated += actuallyPaid;
+            }
+          }
         }
       })
     );
 
-    // KEEP ORIGINAL RESPONSE STRUCTURE, but use adjusted total if needed
-    // We don't directly show actualTotalAmount to keep the frontend working
-    // but log it for admin to compare
-    console.log("Reported total amount:", totalDonations[0]?.total || 0);
-    console.log("Actual total amount (calculated):", actualTotalAmount);
+    // Calculate pending amount
+    pendingAmount = validOrders.reduce((sum, order) => {
+      // Exclude cancelled orders from pending calculation
+      if (order.paymentStatus === "cancelled") {
+        return sum;
+      }
+      
+      // Add amount for pending orders
+      if (order.paymentStatus === "pending") {
+        return sum + order.totalAmount;
+      }
+      
+      // Add remaining installment amounts for active installment orders
+      if (order.paymentType === "installments" && 
+          order.installmentDetails && 
+          order.paymentStatus === "active") {
+        const totalInstallments = order.installmentDetails.numberOfInstallments;
+        const paidInstallments = order.installmentDetails.installmentsPaid || 0;
+        const remainingInstallments = totalInstallments - paidInstallments;
+        const installmentAmount = order.installmentDetails.installmentAmount;
+        const remainingAmount = remainingInstallments * installmentAmount;
+        return sum + remainingAmount;
+      }
+      
+      // Add remaining recurring payments for active recurring orders
+      if (order.paymentType === "recurring" && 
+          order.recurringDetails && 
+          order.paymentStatus === "active") {
+        const totalExpectedAmount = calculateRecurringTotalAmount(order);
+        const totalPaymentsMade = order.recurringDetails.totalPayments || 0;
+        const paidAmount = totalPaymentsMade * order.recurringDetails.amount;
+        const remainingAmount = Math.max(0, totalExpectedAmount - paidAmount);
+        return sum + remainingAmount;
+      }
+      
+      return sum;
+    }, 0);
+
+    // Calculate derived stats
+    const totalCount = validOrders.length;
+    const successRate = totalCount > 0 ? (completedDonationsCount / totalCount) * 100 : 0;
+    const averageDonation = totalCount > 0 ? totalDonated / totalCount : 0;
+
+    console.log("\n=== FINAL STATS ===");
+    console.log("Total Donated:", totalDonated);
+    console.log("Paid Donated:", paidDonated);
+    console.log("Pending Amount:", pendingAmount);
+    console.log("Active Recurring:", activeRecurring);
+    console.log("Recurring Count:", recurringCount);
+    console.log("One Time Count:", oneTimeCount);
+    console.log("Installment Count:", installmentCount);
+    console.log("Monthly Recurring Revenue:", monthlyRecurringRevenue);
 
     res.json({
       stats: {
-        totalAmount: totalDonations[0]?.total || 0,
-        averageDonation: totalDonations[0]
-          ? totalDonations[0].total / totalDonations[0].count
-          : 0,
-        recurringDonations,
-        successRate,
-        // Add these fields, frontend can choose to use them or not
-        actualTotalAmount: actualTotalAmount,
+        // Main financial stats (matching user stats structure)
+        totalAmount: totalDonated,           // Total expected amount
+        totalAmountReceived: paidDonated,    // Total amount actually received
+        paidAmount: paidDonated,
+        pendingAmount: pendingAmount,        // Remaining amount to be received
+        
+        // Counts
+        totalDonations: totalCount,
+        recurringDonations: recurringCount,
+        oneTimeDonations: oneTimeCount,
+        installmentDonations: installmentCount,
+        activeRecurring: activeRecurring,
+        
+        // Revenue metrics
+        monthlyRecurringRevenue: monthlyRecurringRevenue, // Monthly revenue from paid transactions
+        averageDonation: averageDonation,
+        successRate: successRate,
+        
+        // Legacy fields (for backward compatibility)
+        totalDonated: totalDonated,
+        paidDonated: paidDonated,
+        actualTotalAmount: paidDonated,
       },
     });
   } catch (error) {

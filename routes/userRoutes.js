@@ -19,3 +19,4 @@ router.put("/update-password", auth, userController.updatePassword);
 
 router.get("/instagram-feed",userController.instagramFeed)
 module.exports = router;
+ 

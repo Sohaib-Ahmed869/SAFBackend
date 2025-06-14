@@ -83,6 +83,107 @@ const syncSubscriptionPaymentHistory = async (subscription) => {
 };
 
 /**
+ * Check if a subscription has reached its natural end date
+ */
+const hasReachedNaturalEnd = (subscription, stripeSubscription) => {
+  const now = new Date();
+  
+  console.log(`Checking natural end for subscription ${subscription._id}:`);
+  console.log(`Current time: ${now.toISOString()}`);
+  
+  // Check our database end date
+  if (subscription.recurringDetails && subscription.recurringDetails.endDate) {
+    const endDate = new Date(subscription.recurringDetails.endDate);
+    console.log(`Database end date: ${endDate.toISOString()}`);
+    
+    // Check if the end date is today or in the past (more generous tolerance)
+    const endDateOnly = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    console.log(`End date (date only): ${endDateOnly.toISOString()}`);
+    console.log(`Current date (date only): ${nowDateOnly.toISOString()}`);
+    
+    // If current date is on or after the end date, it's a natural end
+    if (nowDateOnly >= endDateOnly) {
+      console.log(`✅ Subscription ${subscription._id} has reached database end date`);
+      return true;
+    }
+    
+    // Also check with time difference for edge cases
+    const timeDiff = now.getTime() - endDate.getTime();
+    const hoursDiff = timeDiff / (1000 * 3600);
+    console.log(`Hours difference from end date: ${hoursDiff}`);
+    
+    // If within 24 hours of end date (before or after), consider it natural
+    if (Math.abs(hoursDiff) <= 24) {
+      console.log(`✅ Subscription ${subscription._id} is within 24 hours of end date`);
+      return true;
+    }
+  }
+  
+  // Check Stripe cancel_at date if available
+  if (stripeSubscription && stripeSubscription.cancel_at) {
+    const cancelAtDate = new Date(stripeSubscription.cancel_at * 1000);
+    console.log(`Stripe cancel_at date: ${cancelAtDate.toISOString()}`);
+    
+    // Check if the cancel_at date is today or in the past
+    const cancelAtDateOnly = new Date(cancelAtDate.getFullYear(), cancelAtDate.getMonth(), cancelAtDate.getDate());
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    console.log(`Cancel_at date (date only): ${cancelAtDateOnly.toISOString()}`);
+    
+    // If current date is on or after the cancel_at date, it's a natural end
+    if (nowDateOnly >= cancelAtDateOnly) {
+      console.log(`✅ Subscription ${subscription._id} has reached Stripe cancel_at date`);
+      return true;
+    }
+    
+    // Also check with time difference
+    const timeDiff = now.getTime() - cancelAtDate.getTime();
+    const hoursDiff = timeDiff / (1000 * 3600);
+    console.log(`Hours difference from cancel_at: ${hoursDiff}`);
+    
+    // If within 24 hours of cancel_at date, consider it natural
+    if (Math.abs(hoursDiff) <= 24) {
+      console.log(`✅ Subscription ${subscription._id} is within 24 hours of cancel_at date`);
+      return true;
+    }
+  }
+  
+  // Special case: If Stripe shows both ended_at and cancel_at with the same date,
+  // and subscription was set to end on a specific date, it's likely natural
+  if (stripeSubscription && 
+      stripeSubscription.ended_at && 
+      stripeSubscription.cancel_at && 
+      subscription.recurringDetails && 
+      subscription.recurringDetails.endDate) {
+    
+    const endedAtDate = new Date(stripeSubscription.ended_at * 1000);
+    const cancelAtDate = new Date(stripeSubscription.cancel_at * 1000);
+    const dbEndDate = new Date(subscription.recurringDetails.endDate);
+    
+    console.log(`Stripe ended_at: ${endedAtDate.toISOString()}`);
+    console.log(`Stripe cancel_at: ${cancelAtDate.toISOString()}`);
+    console.log(`DB end date: ${dbEndDate.toISOString()}`);
+    
+    // If all dates are close to each other (within 48 hours), it's natural
+    const endedAtDiff = Math.abs(endedAtDate.getTime() - dbEndDate.getTime()) / (1000 * 3600);
+    const cancelAtDiff = Math.abs(cancelAtDate.getTime() - dbEndDate.getTime()) / (1000 * 3600);
+    
+    console.log(`Ended_at diff from DB end date: ${endedAtDiff} hours`);
+    console.log(`Cancel_at diff from DB end date: ${cancelAtDiff} hours`);
+    
+    if (endedAtDiff <= 48 && cancelAtDiff <= 48) {
+      console.log(`✅ Subscription ${subscription._id} - all dates align, natural completion`);
+      return true;
+    }
+  }
+  
+  console.log(`❌ Subscription ${subscription._id} - not a natural end`);
+  return false;
+};
+
+/**
  * Scheduled task to sync subscription statuses with Stripe and update accordingly
  */
 const scheduleSubscriptionChecks = () => {
@@ -139,6 +240,7 @@ const scheduleSubscriptionChecks = () => {
             new Date(subscription.recurringDetails.endDate) <= now;
 
           let newStatus = subscription.paymentStatus; // Default to current status
+          let completionDetails = null;
 
           // Log all the conditions for debugging
           console.log(`Subscription ${subscription._id}:
@@ -149,46 +251,90 @@ const scheduleSubscriptionChecks = () => {
             - DB end date passed: ${dbEndDatePassed}
           `);
 
-          // UPDATED PRIORITY DECISION LOGIC:
+          // FIXED PRIORITY DECISION LOGIC:
 
-          // First, always check if Stripe shows the subscription as cancelled
-          if (stripeSubscription.status === "canceled") {
-            newStatus = "cancelled";
+          // Skip status update if subscription is pending cancellation
+          if (subscription.paymentStatus === "pending_cancellation") {
             console.log(
-              `Subscription ${subscription._id} is marked as canceled in Stripe, setting to cancelled`
+              `Subscription ${subscription._id} is pending cancellation, preserving status`
             );
-          }
-          // Otherwise, check for other statuses, but preserve pending_cancellation
-          else {
-            // Skip status update if subscription is pending cancellation
-            if (subscription.paymentStatus === "pending_cancellation") {
-              console.log(
-                `Subscription ${subscription._id} is pending cancellation, preserving status`
-              );
-              // Keep the current pending_cancellation status
-            } else {
-              switch (stripeSubscription.status) {
-                case "active":
+            // Keep the current pending_cancellation status and don't change anything
+          } else {
+            // Handle different Stripe statuses
+            switch (stripeSubscription.status) {
+              case "active":
+                // Check if this should naturally end
+                if (hasReachedNaturalEnd(subscription, stripeSubscription)) {
+                  console.log(`Subscription ${subscription._id} should end naturally but is still active in Stripe`);
+                  // Don't change status yet - wait for the webhook or next sync cycle
+                } else {
                   newStatus = "active";
-                  break;
-                case "past_due":
-                  newStatus = "past_due";
-                  break;
-                case "unpaid":
-                  newStatus = "failed";
-                  break;
-                case "completed":
+                }
+                break;
+
+              case "past_due":
+                newStatus = "past_due";
+                break;
+
+              case "unpaid":
+                newStatus = "failed";
+                break;
+
+              case "completed":
+                newStatus = "ended";
+                completionDetails = {
+                  date: new Date(),
+                  reason: "Stripe marked as completed",
+                  type: "natural_completion",
+                  originalEndDate: subscription.recurringDetails?.endDate
+                };
+                break;
+
+              case "canceled":
+                // CRITICAL FIX: Determine if this was a natural end or administrative cancellation
+                if (hasReachedNaturalEnd(subscription, stripeSubscription)) {
+                  // This was a natural completion
                   newStatus = "ended";
-                  break;
-                // No default case - we'll keep the current status if no match
-              }
+                  completionDetails = {
+                    date: new Date(),
+                    reason: "Reached scheduled end date",
+                    type: "natural_completion",
+                    originalEndDate: subscription.recurringDetails?.endDate,
+                    stripeCancelAt: cancelAtDate,
+                    totalPayments: subscription.recurringDetails?.totalPayments || 0,
+                    totalAmountDonated: subscription.recurringDetails?.paymentHistory
+                      ? subscription.recurringDetails.paymentHistory
+                          .filter(p => p.status === "succeeded")
+                          .reduce((sum, p) => sum + p.amount, 0)
+                      : subscription.totalAmount
+                  };
+                  console.log(`✅ Subscription ${subscription._id} naturally ended - setting status to 'ended'`);
+                } else {
+                  // This was an administrative cancellation
+                  newStatus = "cancelled";
+                  console.log(`❌ Subscription ${subscription._id} was administratively cancelled`);
+                }
+                break;
+
+              case "paused":
+                newStatus = "paused";
+                break;
+
+              default:
+                console.log(`Unhandled Stripe status: ${stripeSubscription.status} for subscription ${subscription._id}`);
             }
           }
 
           // Also check if DB end date has passed but Stripe doesn't show it as cancelled
           // This handles subscriptions that expire naturally without being cancelled
-          if (dbEndDatePassed && stripeSubscription.status !== "canceled") {
+          if (dbEndDatePassed && stripeSubscription.status !== "canceled" && subscription.paymentStatus !== "pending_cancellation") {
             newStatus = "ended";
+            completionDetails = {
+              date: new Date(),
+              reason: "Reached database end date",
+              type: "natural_completion",
+              originalEndDate: subscription.recurringDetails?.endDate
+            };
             console.log(
               `Subscription ${subscription._id} has passed its DB end date and is not canceled in Stripe, marking as ended`
             );
@@ -201,6 +347,17 @@ const scheduleSubscriptionChecks = () => {
             );
 
             subscription.paymentStatus = newStatus;
+            
+            // Update recurring details status if it exists
+            if (subscription.recurringDetails) {
+              subscription.recurringDetails.status = newStatus;
+            }
+            
+            // Add completion details if this is a natural end
+            if (completionDetails) {
+              subscription.completionDetails = completionDetails;
+            }
+
             subscription.transactionDetails = {
               ...subscription.transactionDetails,
               stripeStatus: stripeSubscription.status,
@@ -230,9 +387,28 @@ const scheduleSubscriptionChecks = () => {
           // Handle case where subscription might have been deleted in Stripe
           if (error.code === "resource_missing") {
             console.log(
-              `Subscription ${subscription.transactionDetails.stripeSubscriptionId} not found in Stripe, marking as ended`
+              `Subscription ${subscription.transactionDetails.stripeSubscriptionId} not found in Stripe, checking if should be ended vs cancelled`
             );
-            subscription.paymentStatus = "ended";
+            
+            // Check if this should be marked as ended vs cancelled
+            if (hasReachedNaturalEnd(subscription, null)) {
+              subscription.paymentStatus = "ended";
+              subscription.completionDetails = {
+                date: new Date(),
+                reason: "Subscription not found in Stripe (likely reached end date)",
+                type: "natural_completion",
+                originalEndDate: subscription.recurringDetails?.endDate
+              };
+              console.log(`✅ Missing subscription ${subscription._id} marked as ended (natural completion)`);
+            } else {
+              subscription.paymentStatus = "cancelled";
+              console.log(`❌ Missing subscription ${subscription._id} marked as cancelled`);
+            }
+            
+            if (subscription.recurringDetails) {
+              subscription.recurringDetails.status = subscription.paymentStatus;
+            }
+            
             subscription.transactionDetails = {
               ...subscription.transactionDetails,
               stripeStatus: "deleted",
@@ -252,7 +428,7 @@ const scheduleSubscriptionChecks = () => {
       const now = new Date();
       const localExpiredSubscriptions = await Order.find({
         paymentType: "recurring",
-        paymentStatus: { $nin: ["ended"] },
+        paymentStatus: { $nin: ["ended", "cancelled"] },
         "transactionDetails.stripeSubscriptionId": { $exists: false },
         "recurringDetails.endDate": { $lt: now, $ne: null },
       });
@@ -263,6 +439,15 @@ const scheduleSubscriptionChecks = () => {
 
       for (const subscription of localExpiredSubscriptions) {
         subscription.paymentStatus = "ended";
+        if (subscription.recurringDetails) {
+          subscription.recurringDetails.status = "ended";
+        }
+        subscription.completionDetails = {
+          date: new Date(),
+          reason: "Reached local end date",
+          type: "natural_completion",
+          originalEndDate: subscription.recurringDetails?.endDate
+        };
         await subscription.save();
         console.log(
           `Updated local subscription ${subscription._id} to ended status`

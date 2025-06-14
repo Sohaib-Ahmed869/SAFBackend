@@ -189,7 +189,7 @@ const OrderSchema = new Schema(
           },
           status: {
             type: String,
-            enum: ["active", "paused", "cancelled"],
+            enum: ["active", "paused", "cancelled","ended"],
             default: "active",
           },
           nextPaymentDate: Date,
@@ -222,7 +222,7 @@ const OrderSchema = new Schema(
           startDate: Date,
           status: {
             type: String,
-            enum: ["active", "paused", "cancelled", "completed"],
+            enum: ["active", "paused", "cancelled", "completed","ended"],
             default: "active",
           },
           installmentsPaid: {
@@ -338,6 +338,7 @@ OrderSchema.virtual("subscriptionStatus").get(function () {
 
   if (this.paymentStatus === "cancelled") return "Cancelled";
   if (this.paymentStatus === "paused") return "Paused";
+  if (this.paymentStatus === "ended") return "Ended";
   if (this.paymentStatus === "failed") return "Failed";
   if (this.paymentStatus === "past_due") return "Past Due";
   if (this.paymentStatus === "pending_cancellation") return "Cancellation Pending";
