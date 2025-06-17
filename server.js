@@ -21,6 +21,7 @@ const joinRoutes = require("./routes/joinRoutes");
 const newsLetter = require("./models/newsletter");
 const productRoutes = require("./routes/productRoutes");
 const donationtyperoute = require("./routes/donationtyperoute");
+const paypalRoutes = require("./routes/paypalRoutes");
 const fs = require('fs');
 const path = require('path');
 const setupInstallmentProcessingJob = require("./jobs/processInstallments");
@@ -48,7 +49,8 @@ app.use(
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range']
   })
 );
 app.use(express.json());
@@ -89,6 +91,7 @@ app.use("/api/admin/events", eventRoutesAdmin);
 app.use("/api/join", joinRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/donationtypes", donationtyperoute);
+app.use("/api/paypal", paypalRoutes);
 app.post("/api/newsletter", async (req, res) => {
   const { email } = req.body;
   const existingSubscriber = await newsLetter.findOne({ email });
