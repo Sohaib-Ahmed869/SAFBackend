@@ -43,7 +43,7 @@ exports.createOrder = async (req, res) => {
         intent: 'CAPTURE',
         purchase_units: [{
           amount: {
-            currency_code: 'USD',
+            currency_code: 'AUD',
             value: amount.toString(),
           },
         }],

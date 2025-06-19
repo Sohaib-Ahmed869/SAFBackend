@@ -50,6 +50,7 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
     await Promise.all(validOrders.map(async o => {
       const { user, paymentType, paymentStatus, totalAmount, installmentDetails,
               transactionDetails, recurringDetails } = o;
+      if (!user) return;
       const uid = user.toString();
       donorTotals.set(uid, (donorTotals.get(uid) || 0) + totalAmount);
 
@@ -109,8 +110,9 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
     const totalDonors    = donorTotals.size;
     const avgDonation    = totalDonors ? totalDonated/totalDonors : 0;
     const recurringDonors= new Set(allOrders
-      .filter(o => o.paymentType==="recurring" && o.paymentStatus!=="failed")
-      .map(o => o.user.toString())
+      .filter(o => o.paymentType==="recurring" && o.paymentStatus!=="failed" && o.user)
+      .map(o => o.user ? o.user.toString() : null)
+      .filter(uid => uid)
     ).size;
 
     res.json({
@@ -151,12 +153,14 @@ router.get("/", isAdmin, async (req, res) => {
 
     const map = new Map();
     allOrders.forEach(o => {
+      if (!o.user || !o.user._id) return;
       const uid = o.user._id.toString();
       if (!map.has(uid)) map.set(uid, { user: o.user, orders: [] });
       map.get(uid).orders.push(o);
     });
 
     let donors = Array.from(map.values()).map(({ user, orders }) => {
+      if (!user) return null;
       // split full name
       const [ firstName, ...rest ] = (user.name || "").trim().split(" ");
       const lastName = rest.join(" ");
@@ -232,6 +236,7 @@ router.get("/", isAdmin, async (req, res) => {
         donationType
       };
     });
+    donors = donors.filter(Boolean);
     console.log(donors);
 
     // 5) search

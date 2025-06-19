@@ -620,7 +620,11 @@ exports.createOrder = async (req, res) => {
       },
       donationType: req.body.donationType,
       paymentMethod,
-      paymentStatus: paymentMethod === "bank" ? "pending" : "processing",
+      paymentStatus: paymentMethod === "bank"
+        ? "pending"
+        : paymentMethod === "paypal" && paymentType === "single"
+        ? "completed"
+        : "processing",
       totalAmount,
       transactionDetails: {},
       recurringDetails:
