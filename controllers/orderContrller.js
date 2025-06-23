@@ -624,7 +624,7 @@ exports.createOrder = async (req, res) => {
         ? "pending"
         : paymentMethod === "paypal" && paymentType === "single"
         ? "completed"
-        : "processing",
+        : "active",
       totalAmount,
       transactionDetails: {},
       recurringDetails:
@@ -1133,7 +1133,7 @@ exports.createOrder = async (req, res) => {
               status:
                 paymentIntent.status === "succeeded"
                   ? "completed"
-                  : "processing",
+                  : "active",
               transactionId: paymentIntent.id,
             });
           }
@@ -1995,7 +1995,7 @@ exports.processNextInstallment = async (orderId) => {
       installmentNumber: installmentNumber,
       amount: order.installmentDetails.installmentAmount,
       date: new Date(),
-      status: paymentIntent.status === "succeeded" ? "completed" : "processing",
+      status: paymentIntent.status === "succeeded" ? "completed" : "active",
       transactionId: paymentIntent.id,
     });
 

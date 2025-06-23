@@ -989,8 +989,7 @@ async function handleInvoicePaymentSucceeded(invoice) {
 
         // Make sure status reflects active payment
         if (
-          order.paymentStatus === "requires_action" ||
-          order.paymentStatus === "processing"
+          order.paymentStatus === "requires_action" 
         ) {
           order.paymentStatus = "active";
         }

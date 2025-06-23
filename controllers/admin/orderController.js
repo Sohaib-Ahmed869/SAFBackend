@@ -1040,7 +1040,7 @@ exports.updateDonationStatus = async (req, res) => {
 
     const validStatuses = [
       "pending",
-      "processing",
+      "active",
       "completed",
       "failed",
       "cancelled",

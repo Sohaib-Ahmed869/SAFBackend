@@ -656,7 +656,7 @@ const formatPaymentType = (type) => {
 const formatPaymentStatus = (status) => {
   const statuses = {
     completed: "Paid",
-    processing: "Processing",
+    active: "Active",
     pending: "Pending",
     failed: "Failed",
   };

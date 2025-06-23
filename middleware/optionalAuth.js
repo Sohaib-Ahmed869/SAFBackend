@@ -18,7 +18,7 @@ const optionalAuth = async (req, res, next) => {
 
     const token = authHeader.replace("Bearer ", "");
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    const user = await User.findById(decoded.id).select("name firstName lastName email phone country address notifications role");
 
     if (user) {
       req.user = user;
