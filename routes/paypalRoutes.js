@@ -18,4 +18,7 @@ router.post('/create-dynamic-plan', paypalController.createDynamicPlan);
 // Confirm PayPal subscription
 router.post('/confirm-subscription', optionalAuth, paypalController.confirmSubscription);
 
+// PayPal webhook endpoint
+router.post('/webhook', paypalController.handleWebhook);
+
 module.exports = router; 

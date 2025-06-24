@@ -251,6 +251,17 @@ const OrderSchema = new Schema(
       type: Schema.Types.Mixed, // Flexible schema for different payment methods
       default: {},
     },
+    // PayPal-specific details
+    paypalDetails: {
+      subscriptionId: String, // PayPal subscription ID
+      paymentId: String, // PayPal payment ID
+      planId: String, // PayPal plan ID
+      status: String, // PayPal subscription status
+      lastPaymentDate: Date,
+      lastPaymentId: String,
+      lastUpdated: Date,
+      paymentCompleted: Boolean,
+    },
     // Pause history
     pauseHistory: [
       {

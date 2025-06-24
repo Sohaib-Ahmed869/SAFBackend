@@ -164,10 +164,10 @@ exports.createSubscription = async (req, res) => {
 // Create dynamic PayPal plan for custom recurring donation
 exports.createDynamicPlan = async (req, res) => {
   try {
-    const { amount, frequency = "MONTH", currency = "AUD" } = req.body;
+    const { amount, frequency = "MONTH", currency = "AUD", total_cycles = 0 } = req.body;
     if (!amount) return res.status(400).json({ error: "Amount is required" });
     
-    console.log('Creating dynamic PayPal plan:', { amount, frequency, currency });
+    console.log('Creating dynamic PayPal plan:', { amount, frequency, currency, total_cycles });
     const accessToken = await getAccessToken();
     
     // 1. Create (or reuse) a product
@@ -206,7 +206,7 @@ exports.createDynamicPlan = async (req, res) => {
             frequency: { interval_unit: frequency, interval_count: 1 },
             tenure_type: "REGULAR",
             sequence: 1,
-            total_cycles: 0, // 0 means infinite cycles
+            total_cycles: total_cycles,
             pricing_scheme: {
               fixed_price: { value: amount.toString(), currency_code: currency }
             }
@@ -462,5 +462,241 @@ exports.confirmSubscription = async (req, res) => {
     return res.status(statusCode).json(errorResponse);
   } finally {
     console.log('=== END confirmSubscription ===');
+  }
+};
+
+// PayPal Webhook Handler
+exports.handleWebhook = async (req, res) => {
+  try {
+    const event = req.body;
+    console.log('PayPal webhook received:', event.event_type, event.resource_type);
+
+    // Verify webhook signature (recommended for production)
+    // const isValid = await verifyWebhookSignature(req);
+    // if (!isValid) {
+    //   return res.status(400).json({ error: 'Invalid webhook signature' });
+    // }
+
+    switch (event.event_type) {
+      case 'BILLING.SUBSCRIPTION.ACTIVATED':
+        await handleSubscriptionActivated(event);
+        break;
+      
+      case 'BILLING.SUBSCRIPTION.PAYMENT.COMPLETED':
+        await handleSubscriptionPaymentCompleted(event);
+        break;
+      
+      case 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
+        await handleSubscriptionPaymentFailed(event);
+        break;
+      
+      case 'BILLING.SUBSCRIPTION.CANCELLED':
+        await handleSubscriptionCancelled(event);
+        break;
+      
+      case 'BILLING.SUBSCRIPTION.SUSPENDED':
+        await handleSubscriptionSuspended(event);
+        break;
+      
+      case 'PAYMENT.SALE.COMPLETED':
+        await handlePaymentSaleCompleted(event);
+        break;
+      
+      default:
+        console.log('Unhandled PayPal webhook event:', event.event_type);
+    }
+
+    res.status(200).json({ status: 'success' });
+  } catch (error) {
+    console.error('PayPal webhook error:', error);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+};
+
+// Handle subscription activation
+const handleSubscriptionActivated = async (event) => {
+  const subscription = event.resource;
+  console.log('Subscription activated:', subscription.id);
+  
+  // Find order by PayPal subscription ID
+  const order = await Order.findOne({ 
+    'paypalDetails.subscriptionId': subscription.id 
+  });
+  
+  if (order) {
+    order.paymentStatus = 'active';
+    order.paypalDetails = {
+      ...order.paypalDetails,
+      status: subscription.status,
+      lastUpdated: new Date()
+    };
+    await order.save();
+    console.log('Order updated for activated subscription:', order.donationId);
+  }
+};
+
+// Handle successful subscription payment
+const handleSubscriptionPaymentCompleted = async (event) => {
+  const payment = event.resource;
+  console.log('Webhook payment resource:', JSON.stringify(payment, null, 2));
+  // Find order by PayPal subscription ID
+  const order = await Order.findOne({ 
+    'paypalDetails.subscriptionId': payment.billing_agreement_id 
+  });
+  
+  if (order) {
+    if (order.paymentType === 'installments') {
+      // Update installment progress
+      const currentPaid = order.installmentDetails.installmentsPaid || 0;
+      const totalInstallments = order.installmentDetails.numberOfInstallments;
+      const installmentLog = {
+        installmentNumber: currentPaid + 1,
+        amount: payment.amount.total,
+        paymentDate: new Date(),
+        paypalPaymentId: payment.id,
+        status: 'completed'
+      };
+      console.log('Adding to installmentHistory:', installmentLog);
+      order.installmentDetails.installmentsPaid = currentPaid + 1;
+      order.installmentDetails.installmentHistory.push(installmentLog);
+      
+      // Check if all installments are paid
+      if (order.installmentDetails.installmentsPaid >= totalInstallments) {
+        order.paymentStatus = 'completed';
+        order.installmentDetails.status = 'completed';
+      } else {
+        // Set next installment date
+        const nextDate = new Date();
+        nextDate.setMonth(nextDate.getMonth() + 1);
+        order.installmentDetails.nextInstallmentDate = nextDate;
+      }
+    } else if (order.paymentType === 'recurring') {
+      // Add to payment history for recurring
+      if (!order.paymentHistory) order.paymentHistory = [];
+      order.paymentHistory.push({
+        paymentDate: new Date(),
+        amount: payment.amount.total,
+        paypalPaymentId: payment.id,
+        status: 'completed'
+      });
+    }
+    
+    order.paypalDetails = {
+      ...order.paypalDetails,
+      lastPaymentDate: new Date(),
+      lastPaymentId: payment.id,
+      lastUpdated: new Date()
+    };
+    
+    await order.save();
+    console.log('Order updated for payment:', order.donationId);
+  }
+};
+
+// Handle failed subscription payment
+const handleSubscriptionPaymentFailed = async (event) => {
+  const payment = event.resource;
+  console.log('Subscription payment failed:', payment.id);
+  
+  const order = await Order.findOne({ 
+    'paypalDetails.subscriptionId': payment.billing_agreement_id 
+  });
+  
+  if (order) {
+    if (order.paymentType === 'installments') {
+      // Add failed payment to history
+      const currentPaid = order.installmentDetails.installmentsPaid || 0;
+      order.installmentDetails.installmentHistory.push({
+        installmentNumber: currentPaid + 1,
+        amount: payment.amount.total,
+        paymentDate: new Date(),
+        paypalPaymentId: payment.id,
+        status: 'failed'
+      });
+    }
+    
+    order.paymentStatus = 'failed';
+    order.paypalDetails = {
+      ...order.paypalDetails,
+      lastPaymentDate: new Date(),
+      lastPaymentId: payment.id,
+      lastUpdated: new Date()
+    };
+    
+    await order.save();
+    console.log('Order marked as failed:', order.donationId);
+  }
+};
+
+// Handle subscription cancellation
+const handleSubscriptionCancelled = async (event) => {
+  const subscription = event.resource;
+  console.log('Subscription cancelled:', subscription.id);
+  
+  const order = await Order.findOne({ 
+    'paypalDetails.subscriptionId': subscription.id 
+  });
+  
+  if (order) {
+    order.paymentStatus = 'cancelled';
+    order.paypalDetails = {
+      ...order.paypalDetails,
+      status: subscription.status,
+      lastUpdated: new Date()
+    };
+    
+    if (order.paymentType === 'installments') {
+      order.installmentDetails.status = 'cancelled';
+    }
+    
+    await order.save();
+    console.log('Order cancelled:', order.donationId);
+  }
+};
+
+// Handle subscription suspension
+const handleSubscriptionSuspended = async (event) => {
+  const subscription = event.resource;
+  console.log('Subscription suspended:', subscription.id);
+  
+  const order = await Order.findOne({ 
+    'paypalDetails.subscriptionId': subscription.id 
+  });
+  
+  if (order) {
+    order.paymentStatus = 'suspended';
+    order.paypalDetails = {
+      ...order.paypalDetails,
+      status: subscription.status,
+      lastUpdated: new Date()
+    };
+    
+    await order.save();
+    console.log('Order suspended:', order.donationId);
+  }
+};
+
+// Handle one-time payment completion
+const handlePaymentSaleCompleted = async (event) => {
+  const payment = event.resource;
+  console.log('Payment sale completed:', payment.id);
+  
+  // This handles one-time payments that might be part of installments
+  // You might need to match by custom_id or other identifier
+  const order = await Order.findOne({ 
+    'paypalDetails.paymentId': payment.id 
+  });
+  
+  if (order) {
+    // Update payment status for one-time payments
+    order.paymentStatus = 'completed';
+    order.paypalDetails = {
+      ...order.paypalDetails,
+      paymentCompleted: true,
+      lastUpdated: new Date()
+    };
+    
+    await order.save();
+    console.log('One-time payment completed for order:', order.donationId);
   }
 };

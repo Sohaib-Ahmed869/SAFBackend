@@ -24,6 +24,10 @@ const setupInstallmentProcessingJob = () => {
       // Process each order
       for (const order of orders) {
         try {
+          if (order.paymentMethod === 'paypal') {
+            console.log(`Skipping PayPal installment order ${order._id}; will be updated by webhook.`);
+            continue;
+          }
           await orderController.processNextInstallment(order._id);
         } catch (error) {
           console.error(
