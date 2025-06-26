@@ -179,6 +179,15 @@ const generateUniqueDonationId = async (
 // };
 const calculateBillingAnchor = (billingDay) => {
   const today = new Date();
+
+  // For same-day billing, charge immediately (no billing anchor needed)
+  if (today.getDate() === billingDay) {
+    console.log(
+      "Same day billing - no billing anchor needed, charging immediately"
+    );
+    return null; // Don't set billing anchor for immediate charging
+  }
+
   const currentMonth = today.getMonth();
   const currentYear = today.getFullYear();
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
@@ -188,7 +197,7 @@ const calculateBillingAnchor = (billingDay) => {
   let billingDate = new Date(currentYear, currentMonth, normalizedBillingDay);
 
   // If the billing day has already passed this month, move to next month
-  if (today.getDate() >= normalizedBillingDay) {
+  if (today.getDate() > normalizedBillingDay) {
     billingDate.setMonth(billingDate.getMonth() + 1);
     // Adjust for different month lengths
     const nextMonthDays = new Date(
@@ -199,24 +208,15 @@ const calculateBillingAnchor = (billingDay) => {
     billingDate.setDate(Math.min(normalizedBillingDay, nextMonthDays));
   }
 
-  // FIXED: Ensure the billing date is not more than 1 month from now
-  const maxAllowedDate = new Date(today);
-  maxAllowedDate.setMonth(maxAllowedDate.getMonth() + 1);
-  maxAllowedDate.setDate(today.getDate()); // Keep the same day of month
-
-  if (billingDate > maxAllowedDate) {
-    // If calculated date is too far, use next month on the same day as today
-    billingDate = new Date(today);
-    billingDate.setMonth(billingDate.getMonth() + 1);
-  }
-
-  // Additional safety check: ensure billing date is not more than 31 days from now
-  const maxDaysFromNow = 31;
+  // Ensure billing date is not too far in the future (max 32 days)
+  const maxDaysFromNow = 32;
   const maxTimestamp = today.getTime() + maxDaysFromNow * 24 * 60 * 60 * 1000;
 
   if (billingDate.getTime() > maxTimestamp) {
-    // Fallback: use exactly 30 days from now
-    billingDate = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+    // Fallback: use next month on the same day
+    billingDate = new Date(today);
+    billingDate.setMonth(billingDate.getMonth() + 1);
+    billingDate.setDate(normalizedBillingDay);
   }
 
   console.log(`Billing anchor calculation:
@@ -228,6 +228,7 @@ const calculateBillingAnchor = (billingDay) => {
 
   return Math.floor(billingDate.getTime() / 1000);
 };
+
 const sendBankTransferPendingEmail = async (order) => {
   try {
     // Get user from the order
@@ -620,11 +621,12 @@ exports.createOrder = async (req, res) => {
       },
       donationType: req.body.donationType,
       paymentMethod,
-      paymentStatus: paymentMethod === "bank"
-        ? "pending"
-        : paymentMethod === "paypal" && paymentType === "single"
-        ? "completed"
-        : "active",
+      paymentStatus:
+        paymentMethod === "bank"
+          ? "pending"
+          : paymentMethod === "paypal" && paymentType === "single"
+          ? "completed"
+          : "active",
       totalAmount,
       transactionDetails: {},
       recurringDetails:
@@ -823,78 +825,99 @@ exports.createOrder = async (req, res) => {
           });
           console.log(`Created product for recurring donation: ${product.id}`);
 
-          // Create subscription with billing cycle anchor for consistent monthly charging
-          let subscriptionData = {
-            customer: customer.id,
-            items: [
-              {
-                price_data: {
-                  currency: "aud",
-                  product: product.id,
-                  unit_amount: Math.round(totalAmount * 100), // Use the FULL totalAmount
-                  recurring: {
-                    interval: interval,
-                    interval_count: 1,
+          // Create subscription with billing cycle anchor for consistent charging
+          // Create subscription - handle daily differently to avoid proration
+          let subscriptionData;
+
+          if (recurringDetails.frequency === "daily") {
+            // For daily subscriptions, create without billing anchor and use specific settings
+            subscriptionData = {
+              customer: customer.id,
+              items: [
+                {
+                  price_data: {
+                    currency: "aud",
+                    product: product.id,
+                    unit_amount: Math.round(totalAmount * 100),
+                    recurring: {
+                      interval: "day",
+                      interval_count: 1,
+                    },
                   },
                 },
+              ],
+              payment_settings: {
+                save_default_payment_method: "on_subscription",
+                payment_method_types: ["card"],
               },
-            ],
-            payment_settings: {
-              save_default_payment_method: "on_subscription",
-              payment_method_types: ["card"],
-            },
-            default_payment_method: stripePaymentMethodId,
-            expand: ["latest_invoice.payment_intent"],
-            proration_behavior: "none",
-          };
+              default_payment_method: stripePaymentMethodId,
+              expand: ["latest_invoice.payment_intent"],
+              proration_behavior: "none",
+              // Force immediate billing without proration
+              billing_cycle_anchor: Math.floor(Date.now() / 1000),
+            };
+          } else {
+            // For other frequencies, use the existing logic
+            subscriptionData = {
+              customer: customer.id,
+              items: [
+                {
+                  price_data: {
+                    currency: "aud",
+                    product: product.id,
+                    unit_amount: Math.round(totalAmount * 100),
+                    recurring: {
+                      interval: interval,
+                      interval_count: 1,
+                    },
+                  },
+                },
+              ],
+              payment_settings: {
+                save_default_payment_method: "on_subscription",
+                payment_method_types: ["card"],
+              },
+              default_payment_method: stripePaymentMethodId,
+              expand: ["latest_invoice.payment_intent"],
+              proration_behavior: "none",
+            };
 
+            // Handle billing anchor for monthly only
+            if (recurringDetails.frequency === "monthly") {
+              const billingAnchor = calculateBillingAnchor(billingDay);
+              if (billingAnchor !== null) {
+                subscriptionData.billing_cycle_anchor = billingAnchor;
+                console.log(
+                  `Monthly subscription billing anchor set to: ${new Date(
+                    billingAnchor * 1000
+                  ).toISOString()}`
+                );
+              }
+            }
+          }
+
+          console.log(
+            `Creating ${recurringDetails.frequency} subscription with data:`,
+            JSON.stringify(subscriptionData, null, 2)
+          );
+
+          // ADD END DATE IF PROVIDED
           if (recurringDetails.endDate) {
-            const cancelAtTimestamp = Math.floor(
-              new Date(recurringDetails.endDate).getTime() / 1000
-            );
+            // Set cancellation to end of the end date to ensure last payment is processed
+            const endDate = new Date(recurringDetails.endDate);
+            endDate.setHours(23, 59, 59, 999); // End of day
+            const cancelAtTimestamp = Math.floor(endDate.getTime() / 1000);
             subscriptionData.cancel_at = cancelAtTimestamp;
             console.log(
-              `Subscription will cancel at ${recurringDetails.endDate}`
+              `Subscription will cancel at end of ${
+                recurringDetails.endDate
+              }: ${new Date(cancelAtTimestamp * 1000).toISOString()}`
             );
           }
 
-          const subscription = await stripe.subscriptions.create({
-            customer: customer.id,
-            items: [
-              {
-                price_data: {
-                  currency: "aud",
-                  product: product.id,
-                  unit_amount: Math.round(totalAmount * 100),
-                  recurring: {
-                    interval: interval,
-                    interval_count: 1,
-                    // Remove the usage_type that's causing the error
-                  },
-                },
-              },
-            ],
-            payment_settings: {
-              save_default_payment_method: "on_subscription",
-              payment_method_types: ["card"],
-            },
-            default_payment_method: stripePaymentMethodId,
-            expand: ["latest_invoice.payment_intent"],
-            // Removed billing_cycle_anchor to allow immediate first payment
-            proration_behavior: "none",
-            // Add metadata to track billing day
-            ...(recurringDetails.endDate
-              ? {
-                  cancel_at: Math.floor(
-                    new Date(recurringDetails.endDate).getTime() / 1000
-                  ),
-                }
-              : {}),
-            metadata: {
-              billingDay: billingDay.toString(),
-              donationId: savedOrder.donationId,
-            },
-          });
+          const subscription = await stripe.subscriptions.create(
+            subscriptionData
+          );
           console.log(
             `Created subscription: ${subscription.id} for customer ${customer.id}, status: ${subscription.status}`
           );
@@ -1131,9 +1154,7 @@ exports.createOrder = async (req, res) => {
               amount: installmentDetails.installmentAmount,
               date: new Date(),
               status:
-                paymentIntent.status === "succeeded"
-                  ? "completed"
-                  : "active",
+                paymentIntent.status === "succeeded" ? "completed" : "active",
               transactionId: paymentIntent.id,
             });
           }
@@ -1293,7 +1314,10 @@ exports.updateOrderStatus = async (req, res) => {
         order.recurringDetails = {
           status: "active", // Default status for new recurring donations
           startDate: new Date(),
-          nextPaymentDate: calculateNextPaymentDate(new Date(), order.recurringDetails?.frequency || 'monthly')
+          nextPaymentDate: calculateNextPaymentDate(
+            new Date(),
+            order.recurringDetails?.frequency || "monthly"
+          ),
         };
       }
 
@@ -1341,7 +1365,9 @@ exports.getOrderStats = async (req, res) => {
     const orders = await Order.find({ user: userId });
 
     // Filter out failed orders for all KPIs and calculations
-    const validOrders = orders.filter(order => order.paymentStatus !== "failed");
+    const validOrders = orders.filter(
+      (order) => order.paymentStatus !== "failed"
+    );
 
     // Calculate total donated amount (including all installments and recurring payments)
     let totalDonated = 0;
@@ -1352,26 +1378,37 @@ exports.getOrderStats = async (req, res) => {
         // For one-time payments, use the total amount
         if (order.paymentType === "single") {
           totalDonated += order.totalAmount;
-          if (order.paymentStatus === "completed" || order.paymentStatus === "succeeded") {
+          if (
+            order.paymentStatus === "completed" ||
+            order.paymentStatus === "succeeded"
+          ) {
             paidDonated += order.totalAmount;
           }
         }
         // For installments
-        else if (order.paymentType === "installments" && order.installmentDetails) {
+        else if (
+          order.paymentType === "installments" &&
+          order.installmentDetails
+        ) {
           // If cancelled, only count paid installments
           if (order.paymentStatus === "cancelled") {
-            const paidInstallments = order.installmentDetails.installmentsPaid || 0;
-            totalDonated += paidInstallments * order.installmentDetails.installmentAmount;
-            paidDonated += paidInstallments * order.installmentDetails.installmentAmount;
+            const paidInstallments =
+              order.installmentDetails.installmentsPaid || 0;
+            totalDonated +=
+              paidInstallments * order.installmentDetails.installmentAmount;
+            paidDonated +=
+              paidInstallments * order.installmentDetails.installmentAmount;
           } else {
             // Total expected amount for installments
-            const totalExpectedAmount = 
-              order.installmentDetails.numberOfInstallments * 
+            const totalExpectedAmount =
+              order.installmentDetails.numberOfInstallments *
               order.installmentDetails.installmentAmount;
             totalDonated += totalExpectedAmount;
             // Actually paid installments
-            const paidInstallments = order.installmentDetails.installmentsPaid || 0;
-            paidDonated += paidInstallments * order.installmentDetails.installmentAmount;
+            const paidInstallments =
+              order.installmentDetails.installmentsPaid || 0;
+            paidDonated +=
+              paidInstallments * order.installmentDetails.installmentAmount;
           }
         }
         // For recurring donations
@@ -1382,7 +1419,8 @@ exports.getOrderStats = async (req, res) => {
               let actuallyPaid = 0;
               if (
                 order.transactionDetails?.stripeSubscriptionId &&
-                (order.paymentMethod === "visa" || order.paymentMethod === "mastercard")
+                (order.paymentMethod === "visa" ||
+                  order.paymentMethod === "mastercard")
               ) {
                 const invoices = await stripe.invoices.list({
                   subscription: order.transactionDetails.stripeSubscriptionId,
@@ -1401,8 +1439,10 @@ exports.getOrderStats = async (req, res) => {
                   .filter((payment) => payment.status === "succeeded")
                   .reduce((sum, payment) => sum + (payment.amount || 0), 0);
               } else {
-                const totalPaymentsMade = order.recurringDetails.totalPayments || 0;
-                actuallyPaid = totalPaymentsMade * order.recurringDetails.amount;
+                const totalPaymentsMade =
+                  order.recurringDetails.totalPayments || 0;
+                actuallyPaid =
+                  totalPaymentsMade * order.recurringDetails.amount;
               }
               totalDonated += actuallyPaid;
               paidDonated += actuallyPaid;
@@ -1414,7 +1454,8 @@ exports.getOrderStats = async (req, res) => {
               let actuallyPaid = 0;
               if (
                 order.transactionDetails?.stripeSubscriptionId &&
-                (order.paymentMethod === "visa" || order.paymentMethod === "mastercard")
+                (order.paymentMethod === "visa" ||
+                  order.paymentMethod === "mastercard")
               ) {
                 const invoices = await stripe.invoices.list({
                   subscription: order.transactionDetails.stripeSubscriptionId,
@@ -1437,8 +1478,10 @@ exports.getOrderStats = async (req, res) => {
                 order.paymentStatus === "completed" ||
                 order.paymentStatus === "cancelled"
               ) {
-                const totalPaymentsMade = order.recurringDetails.totalPayments || 0;
-                actuallyPaid = totalPaymentsMade * order.recurringDetails.amount;
+                const totalPaymentsMade =
+                  order.recurringDetails.totalPayments || 0;
+                actuallyPaid =
+                  totalPaymentsMade * order.recurringDetails.amount;
               }
               paidDonated += actuallyPaid;
             }
@@ -1455,8 +1498,10 @@ exports.getOrderStats = async (req, res) => {
                   .filter((payment) => payment.status === "succeeded")
                   .reduce((sum, payment) => sum + (payment.amount || 0), 0);
               } else {
-                const totalPaymentsMade = order.recurringDetails?.totalPayments || 0;
-                actuallyPaid = totalPaymentsMade * (order.recurringDetails?.amount || 0);
+                const totalPaymentsMade =
+                  order.recurringDetails?.totalPayments || 0;
+                actuallyPaid =
+                  totalPaymentsMade * (order.recurringDetails?.amount || 0);
               }
               totalDonated += actuallyPaid;
               paidDonated += actuallyPaid;
@@ -1472,8 +1517,10 @@ exports.getOrderStats = async (req, res) => {
                   .filter((payment) => payment.status === "succeeded")
                   .reduce((sum, payment) => sum + (payment.amount || 0), 0);
               } else if (order.paymentStatus !== "failed") {
-                const totalPaymentsMade = order.recurringDetails?.totalPayments || 0;
-                actuallyPaid = totalPaymentsMade * (order.recurringDetails?.amount || 0);
+                const totalPaymentsMade =
+                  order.recurringDetails?.totalPayments || 0;
+                actuallyPaid =
+                  totalPaymentsMade * (order.recurringDetails?.amount || 0);
               }
               paidDonated += actuallyPaid;
             }
@@ -1511,8 +1558,9 @@ exports.getOrderStats = async (req, res) => {
       completedOrders: validOrders.filter(
         (order) => order.paymentStatus === "completed"
       ).length,
-      pendingOrders: validOrders.filter((order) => order.paymentStatus === "pending")
-        .length,
+      pendingOrders: validOrders.filter(
+        (order) => order.paymentStatus === "pending"
+      ).length,
       pendingAmount: validOrders.reduce((sum, order) => {
         // Exclude cancelled orders from pending calculation
         if (order.paymentStatus === "cancelled") {
@@ -1563,7 +1611,10 @@ exports.getOrderStats = async (req, res) => {
       // Monthly stats
       monthlyStats: await getMonthlyStats(validOrders, stripe),
       // Add average donation
-      averageDonation: validOrders.length > 0 ? Number((totalDonated / validOrders.length).toFixed(2)) : 0,
+      averageDonation:
+        validOrders.length > 0
+          ? Number((totalDonated / validOrders.length).toFixed(2))
+          : 0,
     };
 
     res.json({
@@ -1585,7 +1636,7 @@ const calculateRecurringTotalAmount = (order) => {
   if (!order.recurringDetails) return 0;
 
   const { amount, frequency, startDate, endDate } = order.recurringDetails;
-  
+
   if (!startDate || !endDate) {
     // If no end date specified, just return the amount of payments made so far
     const totalPaymentsMade = order.recurringDetails.totalPayments || 0;
@@ -1594,23 +1645,37 @@ const calculateRecurringTotalAmount = (order) => {
 
   const start = new Date(startDate);
   const end = new Date(endDate);
-  
+
   // Calculate total expected payments based on frequency
   let totalPayments = 0;
-  
+
   switch (frequency.toLowerCase()) {
-    case 'daily':
+    case "daily":
       totalPayments = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
       break;
-    case 'weekly':
+    case "weekly":
       totalPayments = Math.ceil((end - start) / (1000 * 60 * 60 * 24 * 7)) + 1;
       break;
-    case 'monthly':
-      const monthsDiff = (end.getFullYear() - start.getFullYear()) * 12 + 
-                        (end.getMonth() - start.getMonth()) + 1;
-      totalPayments = monthsDiff;
+    case "monthly":
+      // FIXED: Proper monthly calculation
+      const startYear = start.getFullYear();
+      const startMonth = start.getMonth();
+      const startDay = start.getDate();
+      const endYear = end.getFullYear();
+      const endMonth = end.getMonth();
+      const endDay = end.getDate();
+
+      // Calculate months difference
+      let monthsDiff = (endYear - startYear) * 12 + (endMonth - startMonth);
+
+      // If end day is >= start day, include the final month
+      if (endDay >= startDay) {
+        monthsDiff += 1;
+      }
+
+      totalPayments = Math.max(1, monthsDiff); // At least 1 payment
       break;
-    case 'yearly':
+    case "yearly":
       totalPayments = end.getFullYear() - start.getFullYear() + 1;
       break;
     default:
@@ -1694,7 +1759,9 @@ const getMonthlyStats = async (orders, stripe) => {
             order.recurringDetails.paymentHistory
               .filter((p) => p.status === "succeeded")
               .forEach((payment) => {
-                const paymentDate = payment.date ? new Date(payment.date) : initialDate;
+                const paymentDate = payment.date
+                  ? new Date(payment.date)
+                  : initialDate;
                 const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
                   paymentDate.getMonth() + 1
                 ).padStart(2, "0")}`;
@@ -1806,12 +1873,11 @@ const calculateNextPaymentDate = (startDate, frequency, billingDay = null) => {
       nextDate.setDate(nextDate.getDate() + 7);
       break;
     case "monthly":
-      // Move to next month
+      // For monthly payments, always move to next month and use billing day
       nextDate.setMonth(nextDate.getMonth() + 1);
 
-      // If billing day is specified, use that date instead of current day
       if (billingDay) {
-        // Get days in the next month to handle edge cases (31st, 30th, etc.)
+        // Get days in the target month to handle edge cases
         const daysInMonth = new Date(
           nextDate.getFullYear(),
           nextDate.getMonth() + 1,
@@ -1826,6 +1892,7 @@ const calculateNextPaymentDate = (startDate, frequency, billingDay = null) => {
     default:
       nextDate.setMonth(nextDate.getMonth() + 1);
   }
+
   return nextDate;
 };
 /**

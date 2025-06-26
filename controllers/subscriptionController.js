@@ -8,7 +8,7 @@ exports.getActiveSubscriptions = async (req, res) => {
       {
         $match: {
           user: req.user._id, // You'll need to convert this to ObjectId
-          paymentType: { $in: ["recurring", "installments"] }
+          paymentType: { $in: ["recurring", "installments"] },
         },
       },
       {
@@ -120,6 +120,7 @@ exports.pauseSubscription = async (req, res) => {
               behavior: "mark_uncollectible", // or 'keep_as_draft' based on your business logic
               resumes_at: Math.floor(pauseEndDate.getTime() / 1000), // Unix timestamp
             },
+            proration_behavior: "none",
           }
         );
 
@@ -202,7 +203,9 @@ exports.resumeSubscription = async (req, res) => {
           subscription.transactionDetails.stripeSubscriptionId,
           {
             pause_collection: "", // Empty string removes the pause
+            proration_behavior: "none", // No proration for resuming
           }
+          
         );
 
         console.log(
@@ -254,7 +257,10 @@ const sendCancellationRequestEmail = async (subscription) => {
     // Get user from the subscription
     const user = await User.findById(subscription.user);
     if (!user || !user.email) {
-      console.error("Missing user or user email for subscription:", subscription._id);
+      console.error(
+        "Missing user or user email for subscription:",
+        subscription._id
+      );
       return;
     }
 
@@ -274,10 +280,18 @@ const sendCancellationRequestEmail = async (subscription) => {
           <p><strong>Subscription ID:</strong> ${subscription._id}</p>
           <p><strong>Donor Name:</strong> ${user.name}</p>
           <p><strong>Donor Email:</strong> ${user.email}</p>
-          <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(2)} AUD</p>
-          <p><strong>Frequency:</strong> ${subscription.recurringDetails.frequency}</p>
-          <p><strong>Start Date:</strong> ${new Date(subscription.recurringDetails.startDate).toLocaleDateString()}</p>
-          <p><strong>Cancellation Reason:</strong> ${subscription.cancellationDetails?.reason || "Not provided"}</p>
+          <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(
+            2
+          )} AUD</p>
+          <p><strong>Frequency:</strong> ${
+            subscription.recurringDetails.frequency
+          }</p>
+          <p><strong>Start Date:</strong> ${new Date(
+            subscription.recurringDetails.startDate
+          ).toLocaleDateString()}</p>
+          <p><strong>Cancellation Reason:</strong> ${
+            subscription.cancellationDetails?.reason || "Not provided"
+          }</p>
         </div>
 
         <p>Please review this request and take appropriate action through the admin panel.</p>
@@ -307,8 +321,12 @@ const sendCancellationRequestEmail = async (subscription) => {
         
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Subscription Details:</h3>
-          <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(2)} AUD</p>
-          <p><strong>Frequency:</strong> ${subscription.recurringDetails.frequency}</p>
+          <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(
+            2
+          )} AUD</p>
+          <p><strong>Frequency:</strong> ${
+            subscription.recurringDetails.frequency
+          }</p>
         </div>
 
         <p>Our admin team will review your request and process it accordingly. You will receive another email once the cancellation is confirmed.</p>
@@ -323,7 +341,9 @@ const sendCancellationRequestEmail = async (subscription) => {
       "Cancellation Request Received - Shahid Afridi Foundation"
     );
 
-    console.log(`Cancellation request emails sent for subscription: ${subscription._id}`);
+    console.log(
+      `Cancellation request emails sent for subscription: ${subscription._id}`
+    );
     return true;
   } catch (error) {
     console.error("Error sending cancellation request emails:", error);
@@ -358,23 +378,28 @@ exports.cancelSubscription = async (req, res) => {
         // Get all paid invoices for this subscription
         const invoices = await stripe.invoices.list({
           subscription: subscription.transactionDetails.stripeSubscriptionId,
-          status: 'paid',
+          status: "paid",
           limit: 100,
         });
-        
+
         // Record all payments in our local payment history
         if (subscription.recurringDetails) {
-          subscription.recurringDetails.paymentHistory = subscription.recurringDetails.paymentHistory || [];
-          
+          subscription.recurringDetails.paymentHistory =
+            subscription.recurringDetails.paymentHistory || [];
+
           // Add any payments from Stripe not already in our history
           for (const invoice of invoices.data) {
-            const paymentDate = new Date(invoice.status_transitions.paid_at * 1000);
+            const paymentDate = new Date(
+              invoice.status_transitions.paid_at * 1000
+            );
             const paymentAmount = invoice.amount_paid / 100; // Convert from cents
-            
+
             // Check if we already have this payment recorded
-            const paymentExists = subscription.recurringDetails.paymentHistory.some(p => 
-              p.invoiceId === invoice.id);
-            
+            const paymentExists =
+              subscription.recurringDetails.paymentHistory.some(
+                (p) => p.invoiceId === invoice.id
+              );
+
             if (!paymentExists) {
               subscription.recurringDetails.paymentHistory.push({
                 date: paymentDate,
@@ -384,11 +409,12 @@ exports.cancelSubscription = async (req, res) => {
               });
             }
           }
-          
+
           // Update total payments count
-          subscription.recurringDetails.totalPayments = 
-            subscription.recurringDetails.paymentHistory.filter(p => 
-              p.status === "succeeded").length;
+          subscription.recurringDetails.totalPayments =
+            subscription.recurringDetails.paymentHistory.filter(
+              (p) => p.status === "succeeded"
+            ).length;
         }
       } catch (stripeError) {
         console.error("Error fetching Stripe payment history:", stripeError);
@@ -402,17 +428,18 @@ exports.cancelSubscription = async (req, res) => {
       date: new Date(),
       reason: reason || "User requested cancellation",
       requestedBy: req.user._id,
-      status: "pending"
+      status: "pending",
     };
 
     await subscription.save();
-    
+
     // Send cancellation request emails
     await sendCancellationRequestEmail(subscription);
 
     res.json({
       status: "Success",
-      message: "Cancellation request submitted successfully. Your request is pending admin approval.",
+      message:
+        "Cancellation request submitted successfully. Your request is pending admin approval.",
       subscription,
     });
   } catch (error) {
@@ -487,6 +514,7 @@ exports.updateSubscriptionAmount = async (req, res) => {
                 price: newPrice.id,
               },
             ],
+            proration_behavior: "none", // No proration for this update
           }
         );
 
@@ -647,6 +675,7 @@ exports.updateSubscriptionEndDate = async (req, res) => {
           subscription.transactionDetails.stripeSubscriptionId,
           {
             cancel_at: endDateTimestamp,
+            proration_behavior: "none", // No proration for this update
           }
         );
 
@@ -988,9 +1017,7 @@ async function handleInvoicePaymentSucceeded(invoice) {
         }
 
         // Make sure status reflects active payment
-        if (
-          order.paymentStatus === "requires_action" 
-        ) {
+        if (order.paymentStatus === "requires_action") {
           order.paymentStatus = "active";
         }
 
@@ -1000,12 +1027,18 @@ async function handleInvoicePaymentSucceeded(invoice) {
         );
 
         // Send receipt email for successful payment
-        if (order.paymentType === 'recurring' || order.paymentType === 'installments') {
+        if (
+          order.paymentType === "recurring" ||
+          order.paymentType === "installments"
+        ) {
           try {
             const result = await sendReceiptEmail(order);
-            console.log(`Sent receipt email for order ${order._id}:`, result.message);
+            console.log(
+              `Sent receipt email for order ${order._id}:`,
+              result.message
+            );
           } catch (emailError) {
-            console.error('Failed to send receipt email:', emailError);
+            console.error("Failed to send receipt email:", emailError);
           }
         }
       } else {
@@ -1077,14 +1110,18 @@ async function handleInvoicePaymentFailed(invoice) {
 // Handler for subscription updates
 async function handleSubscriptionUpdated(subscription) {
   try {
-    console.log(`Processing subscription update: ${subscription.id}, status: ${subscription.status}`);
+    console.log(
+      `Processing subscription update: ${subscription.id}, status: ${subscription.status}`
+    );
 
     const order = await Order.findOne({
       "transactionDetails.stripeSubscriptionId": subscription.id,
     });
 
     if (order) {
-      console.log(`Found order ${order._id} for subscription ${subscription.id}`);
+      console.log(
+        `Found order ${order._id} for subscription ${subscription.id}`
+      );
 
       // Update status based on Stripe subscription status
       switch (subscription.status) {
@@ -1106,11 +1143,15 @@ async function handleSubscriptionUpdated(subscription) {
         case "canceled":
           console.log(`Subscription canceled. Checking reason...`);
           console.log(`Cancel at timestamp: ${subscription.cancel_at}`);
-          console.log(`Cancel at reason: ${subscription.cancellation_details?.reason}`);
+          console.log(
+            `Cancel at reason: ${subscription.cancellation_details?.reason}`
+          );
 
           // Check if this was cancelled due to reaching the scheduled end date
-          const wasScheduledToEnd = subscription.cancel_at &&
-            subscription.cancellation_details?.reason === 'cancellation_requested';
+          const wasScheduledToEnd =
+            subscription.cancel_at &&
+            subscription.cancellation_details?.reason ===
+              "cancellation_requested";
 
           // Also check our order's end date
           let reachedEndDate = false;
@@ -1122,12 +1163,15 @@ async function handleSubscriptionUpdated(subscription) {
 
             // If within 2 days of end date, consider it a natural end
             reachedEndDate = daysDiff <= 2;
-            console.log(`End date: ${endDate}, Days diff: ${daysDiff}, Reached end: ${reachedEndDate}`);
+            console.log(
+              `End date: ${endDate}, Days diff: ${daysDiff}, Reached end: ${reachedEndDate}`
+            );
           }
 
           // Check if subscription had a cancel_at date that was reached
-          const cancelAtReached = subscription.cancel_at &&
-            (new Date().getTime() / 1000) >= subscription.cancel_at;
+          const cancelAtReached =
+            subscription.cancel_at &&
+            new Date().getTime() / 1000 >= subscription.cancel_at;
 
           if (reachedEndDate || cancelAtReached || wasScheduledToEnd) {
             // This was a planned end, mark as completed
@@ -1142,7 +1186,9 @@ async function handleSubscriptionUpdated(subscription) {
             if (order.recurringDetails) {
               order.recurringDetails.status = "cancelled";
             }
-            console.log(`Subscription ${subscription.id} was manually cancelled`);
+            console.log(
+              `Subscription ${subscription.id} was manually cancelled`
+            );
           }
           break;
       }
@@ -1154,14 +1200,15 @@ async function handleSubscriptionUpdated(subscription) {
         stripeCancelAt: subscription.cancel_at
           ? new Date(subscription.cancel_at * 1000)
           : null,
-        stripeCancellationReason: subscription.cancellation_details?.reason || null,
+        stripeCancellationReason:
+          subscription.cancellation_details?.reason || null,
         stripePauseCollection: subscription.pause_collection
           ? {
-            behavior: subscription.pause_collection.behavior,
-            resumesAt: subscription.pause_collection.resumes_at
-              ? new Date(subscription.pause_collection.resumes_at * 1000)
-              : null,
-          }
+              behavior: subscription.pause_collection.behavior,
+              resumesAt: subscription.pause_collection.resumes_at
+                ? new Date(subscription.pause_collection.resumes_at * 1000)
+                : null,
+            }
           : null,
       };
 
@@ -1273,6 +1320,7 @@ exports.retryPayment = async (req, res) => {
           customer: stripeSubscription.customer,
           subscription: stripeSubscription.id,
           auto_advance: false, // Don't finalize the invoice yet
+          proration_behavior: "none", // No proration for this invoice
         });
 
         // Finalize the invoice
