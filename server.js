@@ -22,9 +22,10 @@ const joinRoutes = require("./routes/joinRoutes");
 const newsLetter = require("./models/newsletter");
 const productRoutes = require("./routes/productRoutes");
 const donationtyperoute = require("./routes/donationtyperoute");
+const goFundMeRoutes = require("./routes/goFundMeRoutes");
 const paypalRoutes = require("./routes/paypalRoutes");
-const fs = require('fs');
-const path = require('path');
+const fs = require("fs");
+const path = require("path");
 const setupInstallmentProcessingJob = require("./jobs/processInstallments");
 const {
   scheduleSubscriptionChecks,
@@ -49,32 +50,36 @@ app.use(
       "https://www.shahidafridifoundation.org.au",
     ],
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-    exposedHeaders: ['Content-Range', 'X-Content-Range']
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+    exposedHeaders: ["Content-Range", "X-Content-Range"],
   })
 );
+app.use("/api/gofundme/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
 app.get("/", (req, res) => {
   res.send("API is running...");
 });
 // Ensure uploads directory exists
-const uploadsBaseDir = path.join(__dirname, 'public/uploads');
-const uploadsProductsDir = path.join(uploadsBaseDir, 'products');
+const uploadsBaseDir = path.join(__dirname, "public/uploads");
+const uploadsProductsDir = path.join(uploadsBaseDir, "products");
 
-[uploadsBaseDir, uploadsProductsDir].forEach(dir => {
+[uploadsBaseDir, uploadsProductsDir].forEach((dir) => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 });
 
 // Make uploads directory publicly accessible
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), {
-  setHeaders: (res, path) => {
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  }
-}));
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "public/uploads"), {
+    setHeaders: (res, path) => {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    },
+  })
+);
 
 // Routes
 app.use("/api/users", userRoutes);
@@ -93,6 +98,7 @@ app.use("/api/join", joinRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/donationtypes", donationtyperoute);
 app.use("/api/paypal", paypalRoutes);
+app.use("/api/gofundme", goFundMeRoutes);
 app.post("/api/newsletter", async (req, res) => {
   const { email } = req.body;
   const existingSubscriber = await newsLetter.findOne({ email });
@@ -113,7 +119,7 @@ app.get("/api/newsletters", async (req, res) => {
 // Error handling
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5001;  // Changed from 5000 to 5001
+const PORT = process.env.PORT || 5001; // Changed from 5000 to 5001
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
