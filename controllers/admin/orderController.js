@@ -1,6 +1,7 @@
 // controllers/adminController.js
 const Order = require("../../models/order");
 const User = require("../../models/user");
+const GoFundMeDonation = require("../../models/goFundMeDonations");
 const { sendEmail } = require("../../services/emailUtil");
 
 exports.getDashboardStats = async (req, res) => {
@@ -9,6 +10,11 @@ exports.getDashboardStats = async (req, res) => {
 
     // Get all orders
     const allOrders = await Order.find({}).lean();
+
+    // Get all GoFundMe donations
+    const allGoFundMeDonations = await GoFundMeDonation.find({
+      paymentStatus: { $in: ["completed", "pending"] }
+    }).lean();
 
     // Filter out failed orders for all calculations
     const validOrders = allOrders.filter(order => order.paymentStatus !== "failed");
@@ -306,8 +312,31 @@ exports.getDashboardStats = async (req, res) => {
       return sum;
     }, 0);
 
-    // Calculate derived stats
-    const totalCount = validOrders.length;
+    // Process GoFundMe donations
+    console.log("Processing GoFundMe donations...");
+    allGoFundMeDonations.forEach(donation => {
+      console.log(`Processing GoFundMe donation ${donation._id}: amount=${donation.amount}, status=${donation.paymentStatus}`);
+      
+      // Add to total donated amount
+      totalDonated += donation.amount;
+      
+      // Add to paid amount if completed
+      if (donation.paymentStatus === "completed") {
+        paidDonated += donation.amount;
+        completedDonationsCount++;
+      }
+      
+      // Add to pending amount if pending
+      if (donation.paymentStatus === "pending") {
+        pendingAmount += donation.amount;
+      }
+      
+      // Count as one-time donation
+      oneTimeCount++;
+    });
+
+    // Calculate derived stats (including GoFundMe donations)
+    const totalCount = validOrders.length + allGoFundMeDonations.length;
     const successRate = totalCount > 0 ? (completedDonationsCount / totalCount) * 100 : 0;
     const averageDonation = totalCount > 0 ? totalDonated / totalCount : 0;
 
@@ -335,6 +364,11 @@ exports.getDashboardStats = async (req, res) => {
         oneTimeDonations: oneTimeCount,
         installmentDonations: installmentCount,
         activeRecurring: activeRecurring,
+        
+        // GoFundMe donation stats
+        goFundMeDonations: allGoFundMeDonations.length,
+        goFundMeCompleted: allGoFundMeDonations.filter(d => d.paymentStatus === "completed").length,
+        goFundMePending: allGoFundMeDonations.filter(d => d.paymentStatus === "pending").length,
         
         // Revenue metrics
         monthlyRecurringRevenue: monthlyRecurringRevenue, // Monthly revenue from paid transactions

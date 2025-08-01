@@ -8,6 +8,7 @@ const { productUpload } = require("../config/s3");
 // Public routes
 router.get("/public", goFundMeController.getPublicGoFundMes);
 router.get("/campaign/:slug", goFundMeController.getGoFundMeBySlug);
+router.get("/categories", goFundMeController.getAvailableCategories);
 
 // User routes (protected)
 router.post(
@@ -17,6 +18,8 @@ router.post(
   goFundMeController.createGoFundMe
 );
 router.get("/my-requests", auth, goFundMeController.getMyGoFundMeRequests);
+router.get("/my-donations", auth, goFundMeController.getMyP2PDonations);
+router.get("/test-email", auth, goFundMeController.testEmail);
 
 // Payment routes (public)
 router.post(

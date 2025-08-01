@@ -4,6 +4,167 @@ const User = require("../models/user");
 const mongoose = require("mongoose");
 const { deleteS3Object } = require("../config/s3");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const { sendEmail, testEmailConfig } = require("../services/emailUtil");
+
+// Helper function to get display category
+const getDisplayCategory = (category, customCategory) => {
+  if (category === "other" && customCategory) {
+    return customCategory;
+  }
+  return category;
+};
+
+// Helper function to send admin notification for new GoFundMe request
+const sendAdminNotification = async (goFundMe, user) => {
+  try {
+   
+    const displayCategory = getDisplayCategory(goFundMe.category, goFundMe.customCategory);
+   
+    const adminUser = await User.findOne({ role: "admin" });
+    
+    // Create email body first
+    const adminEmailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #4a7c59;">New GoFundMe Campaign Request</h2>
+        
+        <p>A new GoFundMe campaign request has been submitted and requires your review.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Campaign Details:</h3>
+          <p><strong>Campaign Title:</strong> ${goFundMe.title}</p>
+          <p><strong>Campaign ID:</strong> ${goFundMe._id}</p>
+          <p><strong>Category:</strong> ${displayCategory}</p>
+          <p><strong>Target Amount:</strong> $${goFundMe.targetAmount.toFixed(2)} AUD</p>
+          <p><strong>Urgency Level:</strong> ${goFundMe.urgencyLevel}</p>
+          <p><strong>Submitted Date:</strong> ${new Date(goFundMe.createdAt).toLocaleDateString()}</p>
+        </div>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Requester Details:</h3>
+          <p><strong>Name:</strong> ${user.name}</p>
+          <p><strong>Email:</strong> ${user.email}</p>
+          <p><strong>User ID:</strong> ${user._id}</p>
+        </div>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Campaign Description:</h3>
+          <p><strong>Description:</strong> ${goFundMe.description}</p>
+          <p><strong>Personal Story:</strong> ${goFundMe.personalStory}</p>
+          <p><strong>Financial Situation:</strong> ${goFundMe.financialSituation}</p>
+          <p><strong>Reason for Funding:</strong> ${goFundMe.reasonForFunding}</p>
+        </div>
+        
+        <p style="margin-top: 20px;">
+          <strong>Action Required:</strong> Please review this campaign request through the admin panel and approve or reject it accordingly.
+        </p>
+        
+        <p style="color: #666; font-size: 12px; margin-top: 30px;">
+          This is an automated notification from the Shahid Afridi Foundation GoFundMe system.
+        </p>
+      </div>
+    `;
+
+    if (!adminUser || !adminUser.email) {
+      const fallbackEmail = process.env.ADMIN_EMAIL || "info@shahidafridifoundation.org.au";
+      console.log("Using fallback email:", fallbackEmail);
+      return await sendEmail(
+        fallbackEmail,
+        adminEmailBody,
+        "New GoFundMe Campaign Request - Shahid Afridi Foundation"
+      );
+    }
+    
+    const adminEmail = adminUser.email;
+   
+    const emailResult = await sendEmail(
+      adminEmail,
+      adminEmailBody,
+      "New GoFundMe Campaign Request - Shahid Afridi Foundation"
+    );
+
+    console.log("Email result:", emailResult);
+    
+    if (emailResult.success) {
+      console.log("Admin notification sent successfully for GoFundMe request:", goFundMe._id);
+    } else {
+      console.error("Failed to send admin notification:", emailResult.message);
+    }
+  } catch (error) {
+    console.error("Error sending admin notification for GoFundMe request:", error);
+    console.error("Error stack:", error.stack);
+  }
+};
+
+// Helper function to send user notification for GoFundMe request review
+const sendUserNotification = async (goFundMe, status, adminNotes) => {
+  try {
+    const user = await User.findById(goFundMe.userId);
+    if (!user || !user.email) {
+      console.error("Missing user or user email for GoFundMe:", goFundMe._id);
+      return;
+    }
+
+    const statusText = status === "approved" ? "approved" : "rejected";
+    const statusColor = status === "approved" ? "#4a7c59" : "#d32f2f";
+    
+    const userEmailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: ${statusColor};">GoFundMe Campaign ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}</h2>
+        
+        <p>Dear ${user.name},</p>
+        
+        <p>Your GoFundMe campaign request has been <strong>${statusText}</strong> by our admin team.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Campaign Details:</h3>
+          <p><strong>Campaign Title:</strong> ${goFundMe.title}</p>
+          <p><strong>Category:</strong> ${getDisplayCategory(goFundMe.category, goFundMe.customCategory)}</p>
+          <p><strong>Target Amount:</strong> $${goFundMe.targetAmount.toFixed(2)} AUD</p>
+          <p><strong>Review Date:</strong> ${new Date().toLocaleDateString()}</p>
+        </div>
+        
+        ${adminNotes ? `
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Admin Notes:</h3>
+          <p>${adminNotes}</p>
+        </div>
+        ` : ''}
+        
+        ${status === "approved" ? `
+        <p>Your campaign is now live and can receive donations. You can view your campaign at:</p>
+        <p style="text-align: center; margin: 20px 0;">
+          <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/gofundme/campaign/${goFundMe.slug}" 
+             style="background-color: #4a7c59; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+            View Campaign
+          </a>
+        </p>
+        ` : `
+        <p>If you have any questions about this decision, please contact our support team.</p>
+        `}
+        
+        <p>Thank you for your interest in the Shahid Afridi Foundation.</p>
+      </div>
+    `;
+
+    await sendEmail(
+      user.email,
+      userEmailBody,
+      `GoFundMe Campaign ${statusText.charAt(0).toUpperCase() + statusText.slice(1)} - Shahid Afridi Foundation`
+    );
+
+    console.log("User notification sent for GoFundMe review:", goFundMe._id);
+  } catch (error) {
+    console.error("Error sending user notification for GoFundMe review:", error);
+  }
+};
 
 // @desc    Create a new GoFundMe request
 // @route   POST /api/gofundme
@@ -18,6 +179,7 @@ exports.createGoFundMe = async (req, res) => {
       reasonForFunding,
       targetAmount,
       category,
+      customCategory,
       urgencyLevel,
     } = req.body;
 
@@ -34,6 +196,14 @@ exports.createGoFundMe = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Please provide all required fields",
+      });
+    }
+
+    // Validate customCategory when category is "other"
+    if (category === "other" && !customCategory) {
+      return res.status(400).json({
+        success: false,
+        message: "Custom category is required when 'other' is selected",
       });
     }
 
@@ -69,6 +239,7 @@ exports.createGoFundMe = async (req, res) => {
       reasonForFunding,
       targetAmount: Number.parseFloat(targetAmount),
       category,
+      customCategory: category === "other" ? customCategory : undefined,
       urgencyLevel: urgencyLevel || "medium",
       image: req.file.location,
       imagePath: req.file.key,
@@ -76,6 +247,15 @@ exports.createGoFundMe = async (req, res) => {
 
     const savedGoFundMe = await goFundMe.save();
     await savedGoFundMe.populate("userId", "name email");
+
+    console.log("=== GOFUNDME CREATED SUCCESSFULLY ===");
+    console.log("Saved GoFundMe:", savedGoFundMe._id);
+    console.log("User:", req.user.name, req.user.email);
+
+    // Send admin notification
+    console.log("Calling sendAdminNotification...");
+    await sendAdminNotification(savedGoFundMe, req.user);
+    console.log("sendAdminNotification completed");
 
     res.status(201).json({
       success: true,
@@ -365,6 +545,19 @@ exports.processDonation = async (req, res) => {
       });
     }
 
+    // Get payment method details to determine card type
+    let cardType = "stripe"; // fallback
+    if (paymentIntent.payment_method) {
+      try {
+        const paymentMethod = await stripe.paymentMethods.retrieve(paymentIntent.payment_method);
+        if (paymentMethod.card && paymentMethod.card.brand) {
+          cardType = paymentMethod.card.brand.toLowerCase();
+        }
+      } catch (error) {
+        console.error("Error retrieving payment method details:", error);
+      }
+    }
+
     // Create donation record
     const donation = new GoFundMeDonation({
       goFundMeId,
@@ -377,7 +570,7 @@ exports.processDonation = async (req, res) => {
       paymentStatus: "completed",
       transactionFee: paymentIntent.amount / 100 - Number.parseFloat(netAmount),
       netAmount: Number.parseFloat(netAmount),
-      paymentMethod: "stripe",
+      paymentMethod: cardType,
     });
 
     await donation.save();
@@ -529,6 +722,7 @@ exports.getAdminGoFundMeRequests = async (req, res) => {
       query.$or = [
         { title: { $regex: search, $options: "i" } },
         { category: { $regex: search, $options: "i" } },
+        { customCategory: { $regex: search, $options: "i" } },
       ];
     }
 
@@ -784,6 +978,9 @@ exports.reviewGoFundMeRequest = async (req, res) => {
     await goFundMe.save();
     await goFundMe.populate("userId", "name email");
 
+    // Send user notification
+    await sendUserNotification(goFundMe, status, adminNotes);
+
     res.json({
       success: true,
       message: `GoFundMe request ${status} successfully`,
@@ -836,6 +1033,164 @@ exports.getGoFundMeStats = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching GoFundMe stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get available categories for GoFundMe campaigns
+// @route   GET /api/gofundme/categories
+// @access  Public
+exports.getAvailableCategories = async (req, res) => {
+  try {
+    const predefinedCategories = [
+      "education",
+      "water", 
+      "food",
+      "emergency relief",
+      "medical",
+      "community",
+      "personal",
+      "other"
+    ];
+
+    // Get unique custom categories from existing campaigns
+    const customCategories = await GoFundMe.distinct("customCategory", {
+      category: "other",
+      customCategory: { $exists: true, $ne: "" }
+    });
+
+    res.json({
+      success: true,
+      categories: {
+        predefined: predefinedCategories,
+        custom: customCategories
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching available categories:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Test email functionality
+// @route   GET /api/gofundme/test-email
+// @access  Private
+exports.testEmail = async (req, res) => {
+  try {
+    console.log("=== TESTING EMAIL FUNCTIONALITY ===");
+    console.log("Environment check:");
+    console.log("- EMAIL_USER:", process.env.EMAIL_USER ? "SET" : "NOT SET");
+    console.log("- EMAIL_PASS:", process.env.EMAIL_PASS ? "SET" : "NOT SET");
+    console.log("- ADMIN_EMAIL:", process.env.ADMIN_EMAIL || "info@shahidafridifoundation.org.au");
+    
+    const { getEmailStatus } = require("../services/emailUtil");
+    const emailStatus = getEmailStatus();
+    
+    const testResult = await testEmailConfig();
+    
+    res.json({
+      success: true,
+      message: "Email test completed",
+      result: testResult,
+      emailStatus: emailStatus,
+      config: {
+        emailUser: process.env.EMAIL_USER ? "SET" : "NOT SET",
+        emailPass: process.env.EMAIL_PASS ? "SET" : "NOT SET",
+        adminEmail: process.env.ADMIN_EMAIL || "info@shahidafridifoundation.org.au"
+      },
+      system: {
+        dualProvider: true,
+        primaryProvider: "Outlook",
+        fallbackProvider: "Gmail",
+        description: "System tries Outlook first, falls back to Gmail if Outlook fails"
+      }
+    });
+  } catch (error) {
+    console.error("Email test error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Email test failed",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get user's donations to GoFundMe campaigns
+// @route   GET /api/gofundme/my-donations
+// @access  Private
+exports.getMyP2PDonations = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, status = "all" } = req.query;
+    const userEmail = req.user.email;
+
+    const query = {
+      donorEmail: userEmail,
+    };
+
+    // Add status filter if specified
+    if (status !== "all") {
+      query.paymentStatus = status;
+    }
+
+    const skip = (Number.parseInt(page) - 1) * Number.parseInt(limit);
+
+    const donations = await GoFundMeDonation.find(query)
+      .populate({
+        path: "goFundMeId",
+        select: "title slug category status currentAmount targetAmount image",
+        populate: {
+          path: "userId",
+          select: "name",
+        },
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number.parseInt(limit))
+      .select(
+        "donorName amount message isAnonymous paymentStatus paymentMethod transactionFee netAmount createdAt"
+      );
+
+    const total = await GoFundMeDonation.countDocuments(query);
+
+    // Calculate summary statistics
+    const summary = await GoFundMeDonation.aggregate([
+      { $match: { donorEmail: userEmail, paymentStatus: "completed" } },
+      {
+        $group: {
+          _id: null,
+          totalDonations: { $sum: 1 },
+          totalAmount: { $sum: "$amount" },
+          totalNetAmount: { $sum: "$netAmount" },
+          totalFees: { $sum: "$transactionFee" },
+        },
+      },
+    ]);
+
+    res.json({
+      success: true,
+      donations,
+      summary: summary[0] || {
+        totalDonations: 0,
+        totalAmount: 0,
+        totalNetAmount: 0,
+        totalFees: 0,
+      },
+      pagination: {
+        current: Number.parseInt(page),
+        pages: Math.ceil(total / Number.parseInt(limit)),
+        total,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching user P2P donations:", error);
     res.status(500).json({
       success: false,
       message: "Server error",

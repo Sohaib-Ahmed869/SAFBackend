@@ -51,7 +51,7 @@ const goFundMeDonationSchema = new mongoose.Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ["stripe", "paypal", "bank_transfer"],
+      enum: ["stripe", "paypal", "bank_transfer", "visa", "mastercard", "amex", "discover"],
       default: "stripe",
     },
   },

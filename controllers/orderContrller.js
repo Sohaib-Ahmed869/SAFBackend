@@ -2,13 +2,14 @@
 const Order = require("../models/order");
 const User = require("../models/user");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const { sendReceiptEmail } = require("../services/recieptUtils");
+const { sendReceiptEmail, generateStatementPDF } = require("../services/recieptUtils");
 const { sendEmail } = require("../services/emailUtil");
 const crypto = require("crypto");
 const bcrypt = require("bcrypt");
 const { upload } = require("../config/s3");
 const path = require("path");
 const axios = require("axios");
+const GoFundMeDonation = require("../models/goFundMeDonations");
 
 /**
  * Creates a user account for anonymous donors and sends credentials email
@@ -1236,13 +1237,59 @@ exports.createOrder = async (req, res) => {
 
 exports.getOrders = async (req, res) => {
   try {
+    const userEmail = req.user.email;
+    
+    // Get regular orders
     const orders = await Order.find({ user: req.user._id })
       .sort({ createdAt: -1 })
       .select("-__v");
 
+    // Get GoFundMe donations
+    const goFundMeDonations = await GoFundMeDonation.find({ 
+      donorEmail: userEmail,
+      paymentStatus: { $in: ["completed", "pending"] }
+    })
+    .populate({
+      path: "goFundMeId",
+      select: "title slug category status currentAmount targetAmount image",
+      populate: {
+        path: "userId",
+        select: "name",
+      },
+    })
+    .sort({ createdAt: -1 })
+    .select("donorName amount message isAnonymous paymentStatus paymentMethod transactionFee netAmount createdAt goFundMeId");
+
+    // Transform GoFundMe donations to match order format
+    const transformedDonations = goFundMeDonations.map(donation => ({
+      _id: donation._id,
+      type: "gofundme",
+      totalAmount: donation.amount,
+      paymentStatus: donation.paymentStatus,
+      paymentMethod: donation.paymentMethod,
+      createdAt: donation.createdAt,
+      updatedAt: donation.updatedAt,
+      // Additional GoFundMe specific fields
+      goFundMe: donation.goFundMeId,
+      message: donation.message,
+      isAnonymous: donation.isAnonymous,
+      transactionFee: donation.transactionFee,
+      netAmount: donation.netAmount,
+      donorName: donation.donorName
+    }));
+
+    // Combine and sort all transactions by creation date
+    const allTransactions = [...orders, ...transformedDonations]
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
     res.json({
       status: "Success",
-      orders,
+      orders: allTransactions,
+      summary: {
+        regularOrders: orders.length,
+        goFundMeDonations: goFundMeDonations.length,
+        totalTransactions: allTransactions.length
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -1357,12 +1404,19 @@ exports.updateOrderStatus = async (req, res) => {
 exports.getOrderStats = async (req, res) => {
   try {
     const userId = req.user._id;
+    const userEmail = req.user.email;
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
     console.log("Getting order stats for user:", req.user);
 
     // Get all orders for the user
     const orders = await Order.find({ user: userId });
+
+    // Get all GoFundMe donations for the user
+    const goFundMeDonations = await GoFundMeDonation.find({ 
+      donorEmail: userEmail,
+      paymentStatus: { $in: ["completed", "pending"] } // Include only valid donations
+    });
 
     // Filter out failed orders for all KPIs and calculations
     const validOrders = orders.filter(
@@ -1372,6 +1426,14 @@ exports.getOrderStats = async (req, res) => {
     // Calculate total donated amount (including all installments and recurring payments)
     let totalDonated = 0;
     let paidDonated = 0; // Amount actually paid/received
+
+    // Add GoFundMe donations to the totals
+    goFundMeDonations.forEach(donation => {
+      totalDonated += donation.amount;
+      if (donation.paymentStatus === "completed") {
+        paidDonated += donation.amount;
+      }
+    });
 
     await Promise.all(
       validOrders.map(async (order) => {
@@ -1554,6 +1616,10 @@ exports.getOrderStats = async (req, res) => {
       recurringCount: recurringOrders.length,
       oneTimeCount: oneTimeOrders.length,
       totalOrders: validOrders.length,
+      // GoFundMe donation stats
+      goFundMeDonationsCount: goFundMeDonations.length,
+      goFundMeCompletedCount: goFundMeDonations.filter(d => d.paymentStatus === "completed").length,
+      goFundMePendingCount: goFundMeDonations.filter(d => d.paymentStatus === "pending").length,
       // Additional stats
       completedOrders: validOrders.filter(
         (order) => order.paymentStatus === "completed"
@@ -1610,10 +1676,10 @@ exports.getOrderStats = async (req, res) => {
       ).length,
       // Monthly stats
       monthlyStats: await getMonthlyStats(validOrders, stripe),
-      // Add average donation
+      // Add average donation (including GoFundMe donations)
       averageDonation:
-        validOrders.length > 0
-          ? Number((totalDonated / validOrders.length).toFixed(2))
+        (validOrders.length + goFundMeDonations.length) > 0
+          ? Number((totalDonated / (validOrders.length + goFundMeDonations.length)).toFixed(2))
           : 0,
     };
 
@@ -2315,6 +2381,658 @@ exports.proxyReceiptForViewing = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Server error proxying receipt",
+      error: error.message,
+    });
+  }
+};
+
+exports.generateStatement = async (req, res) => {
+  try {
+    const { financialYear } = req.query;
+    const userId = req.user._id;
+
+    // Validate financial year format (e.g., "2023-2024")
+    if (!financialYear || !/^\d{4}-\d{4}$/.test(financialYear)) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Please provide a valid financial year in format YYYY-YYYY (e.g., 2023-2024)",
+      });
+    }
+
+    const [startYear, endYear] = financialYear.split('-');
+    
+    // Validate that end year is start year + 1
+    if (parseInt(endYear) !== parseInt(startYear) + 1) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Invalid financial year format. End year must be start year + 1 (e.g., 2023-2024)",
+      });
+    }
+
+    const startDate = new Date(parseInt(startYear), 6, 1); // July 1st
+    const endDate = new Date(parseInt(startYear) + 1, 5, 30, 23, 59, 59); // June 30th
+
+    console.log(`Generating statement for user ${userId} from ${startDate} to ${endDate}`);
+
+    // Get all orders for the user in the financial year
+    const orders = await Order.find({
+      user: userId,
+      createdAt: { $gte: startDate, $lte: endDate },
+      paymentStatus: { $ne: "failed" }
+    }).sort({ createdAt: 1 });
+
+    // Get P2P donations (GoFundMe donations) for the user in the financial year
+    const goFundMeDonations = await GoFundMeDonation.find({
+      donorEmail: req.user.email,
+      createdAt: { $gte: startDate, $lte: endDate },
+      paymentStatus: "completed"
+    }).populate('goFundMeId', 'title slug');
+
+    // Check if user has any data for this financial year
+    if (orders.length === 0 && goFundMeDonations.length === 0) {
+      return res.status(404).json({
+        status: "Error",
+        message: "No donation data found for the specified financial year",
+      });
+    }
+
+    // Initialize statement data
+    const statement = {
+      financialYear,
+      user: {
+        name: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(),
+        email: req.user.email,
+        userId: userId
+      },
+      period: {
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString()
+      },
+      summary: {
+        totalDonations: 0,
+        totalAmount: 0,
+        totalRecurringPayments: 0,
+        totalInstallmentPayments: 0,
+        totalOneTimePayments: 0,
+        totalP2PDonations: 0,
+        totalP2PAmount: 0
+      },
+      breakdown: {
+        oneTimePayments: [],
+        recurringPayments: [],
+        installmentPayments: [],
+        p2pDonations: []
+      },
+      monthlySummary: {},
+      paymentMethods: {}
+    };
+
+    // Process regular orders
+    for (const order of orders) {
+      const orderData = {
+        donationId: order.donationId,
+        paymentType: order.paymentType,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        totalAmount: order.totalAmount,
+        createdAt: order.createdAt,
+        lastPaymentDate: order.lastPaymentDate,
+        donationType: order.donationType,
+        items: order.items
+      };
+
+      // Calculate actual payments based on payment type
+      let actualPayments = 0;
+      let paymentHistory = [];
+
+      if (order.paymentType === 'single') {
+        if (order.paymentStatus === 'completed' || order.paymentStatus === 'succeeded') {
+          actualPayments = order.totalAmount;
+          paymentHistory.push({
+            date: order.createdAt,
+            amount: order.totalAmount,
+            status: order.paymentStatus
+          });
+        }
+      } else if (order.paymentType === 'recurring' && order.recurringDetails) {
+        // Calculate recurring payments in the financial year
+        const recurringPayments = order.recurringDetails.paymentHistory || [];
+        const yearPayments = recurringPayments.filter(payment => 
+          payment.date >= startDate && payment.date <= endDate && payment.status === 'succeeded'
+        );
+        
+        actualPayments = yearPayments.reduce((sum, payment) => sum + payment.amount, 0);
+        paymentHistory = yearPayments.map(payment => ({
+          date: payment.date,
+          amount: payment.amount,
+          status: payment.status,
+          invoiceId: payment.invoiceId
+        }));
+
+        orderData.recurringDetails = {
+          frequency: order.recurringDetails.frequency,
+          amount: order.recurringDetails.amount,
+          status: order.recurringDetails.status,
+          totalPayments: order.recurringDetails.totalPayments
+        };
+      } else if (order.paymentType === 'installments' && order.installmentDetails) {
+        // Calculate installment payments in the financial year
+        const installmentPayments = order.installmentDetails.installmentHistory || [];
+        const yearInstallments = installmentPayments.filter(installment => 
+          installment.date >= startDate && installment.date <= endDate && installment.status === 'completed'
+        );
+        
+        actualPayments = yearInstallments.reduce((sum, installment) => sum + installment.amount, 0);
+        paymentHistory = yearInstallments.map(installment => ({
+          date: installment.date,
+          amount: installment.amount,
+          status: installment.status,
+          installmentNumber: installment.installmentNumber,
+          transactionId: installment.transactionId
+        }));
+
+        orderData.installmentDetails = {
+          numberOfInstallments: order.installmentDetails.numberOfInstallments,
+          installmentAmount: order.installmentDetails.installmentAmount,
+          installmentsPaid: order.installmentDetails.installmentsPaid,
+          status: order.installmentDetails.status
+        };
+      }
+
+      orderData.actualPayments = actualPayments;
+      orderData.paymentHistory = paymentHistory;
+
+      // Add to appropriate category
+      if (order.paymentType === 'single') {
+        statement.breakdown.oneTimePayments.push(orderData);
+        statement.summary.totalOneTimePayments += actualPayments;
+      } else if (order.paymentType === 'recurring') {
+        statement.breakdown.recurringPayments.push(orderData);
+        statement.summary.totalRecurringPayments += actualPayments;
+      } else if (order.paymentType === 'installments') {
+        statement.breakdown.installmentPayments.push(orderData);
+        statement.summary.totalInstallmentPayments += actualPayments;
+      }
+
+      // Update payment method summary
+      if (!statement.paymentMethods[order.paymentMethod]) {
+        statement.paymentMethods[order.paymentMethod] = 0;
+      }
+      statement.paymentMethods[order.paymentMethod] += actualPayments;
+    }
+
+    // Process P2P donations
+    for (const donation of goFundMeDonations) {
+      const donationData = {
+        donationId: donation._id,
+        campaignTitle: donation.goFundMeId.title,
+        campaignSlug: donation.goFundMeId.slug,
+        amount: donation.amount,
+        netAmount: donation.netAmount,
+        transactionFee: donation.transactionFee,
+        paymentMethod: donation.paymentMethod,
+        isAnonymous: donation.isAnonymous,
+        message: donation.message,
+        createdAt: donation.createdAt,
+        donorName: donation.donorName
+      };
+
+      statement.breakdown.p2pDonations.push(donationData);
+      statement.summary.totalP2PDonations += 1;
+      statement.summary.totalP2PAmount += donation.amount;
+
+      // Update payment method summary
+      if (!statement.paymentMethods[donation.paymentMethod]) {
+        statement.paymentMethods[donation.paymentMethod] = 0;
+      }
+      statement.paymentMethods[donation.paymentMethod] += donation.amount;
+    }
+
+    // Calculate totals
+    statement.summary.totalDonations = 
+      statement.breakdown.oneTimePayments.length +
+      statement.breakdown.recurringPayments.length +
+      statement.breakdown.installmentPayments.length +
+      statement.breakdown.p2pDonations.length;
+
+    statement.summary.totalAmount = 
+      statement.summary.totalOneTimePayments +
+      statement.summary.totalRecurringPayments +
+      statement.summary.totalInstallmentPayments +
+      statement.summary.totalP2PAmount;
+
+    // Generate monthly summary
+    const monthlyData = {};
+    for (let month = 0; month < 12; month++) {
+      const monthDate = new Date(startDate);
+      monthDate.setMonth(startDate.getMonth() + month);
+      const monthKey = monthDate.toISOString().slice(0, 7); // YYYY-MM format
+      monthlyData[monthKey] = {
+        oneTimePayments: 0,
+        recurringPayments: 0,
+        installmentPayments: 0,
+        p2pDonations: 0,
+        totalAmount: 0
+      };
+    }
+
+    // Calculate monthly totals
+    [...statement.breakdown.oneTimePayments, ...statement.breakdown.recurringPayments, 
+     ...statement.breakdown.installmentPayments].forEach(order => {
+      order.paymentHistory.forEach(payment => {
+        const monthKey = payment.date.toISOString().slice(0, 7);
+        if (monthlyData[monthKey]) {
+          if (order.paymentType === 'single') {
+            monthlyData[monthKey].oneTimePayments += payment.amount;
+          } else if (order.paymentType === 'recurring') {
+            monthlyData[monthKey].recurringPayments += payment.amount;
+          } else if (order.paymentType === 'installments') {
+            monthlyData[monthKey].installmentPayments += payment.amount;
+          }
+          monthlyData[monthKey].totalAmount += payment.amount;
+        }
+      });
+    });
+
+    // Add P2P donations to monthly summary
+    statement.breakdown.p2pDonations.forEach(donation => {
+      const monthKey = donation.createdAt.toISOString().slice(0, 7);
+      if (monthlyData[monthKey]) {
+        monthlyData[monthKey].p2pDonations += donation.amount;
+        monthlyData[monthKey].totalAmount += donation.amount;
+      }
+    });
+
+    statement.monthlySummary = monthlyData;
+
+    // Generate statement ID
+    const statementId = `STMT-${financialYear.replace('-', '')}-${userId.toString().slice(-6)}-${Date.now()}`;
+    statement.statementId = statementId;
+    statement.generatedAt = new Date().toISOString();
+
+    res.json({
+      status: "Success",
+      message: "Statement generated successfully",
+      statement
+    });
+
+  } catch (error) {
+    console.error("Error generating statement:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to generate statement",
+      error: error.message,
+    });
+  }
+};
+
+exports.getAvailableFinancialYears = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Get all orders for the user
+    const orders = await Order.find({
+      user: userId,
+      paymentStatus: { $ne: "failed" }
+    }).select('createdAt paymentType recurringDetails installmentDetails');
+
+    // Get P2P donations for the user
+    const goFundMeDonations = await GoFundMeDonation.find({
+      donorEmail: req.user.email,
+      paymentStatus: "completed"
+    }).select('createdAt');
+
+    // Collect all dates
+    const allDates = [];
+
+    // Add order dates
+    orders.forEach(order => {
+      allDates.push(order.createdAt);
+      
+      // Add recurring payment dates
+      if (order.paymentType === 'recurring' && order.recurringDetails?.paymentHistory) {
+        order.recurringDetails.paymentHistory.forEach(payment => {
+          if (payment.status === 'succeeded') {
+            allDates.push(payment.date);
+          }
+        });
+      }
+      
+      // Add installment payment dates
+      if (order.paymentType === 'installments' && order.installmentDetails?.installmentHistory) {
+        order.installmentDetails.installmentHistory.forEach(installment => {
+          if (installment.status === 'completed') {
+            allDates.push(installment.date);
+          }
+        });
+      }
+    });
+
+    // Add P2P donation dates
+    goFundMeDonations.forEach(donation => {
+      allDates.push(donation.createdAt);
+    });
+
+    // Extract unique financial years
+    const financialYears = new Set();
+    
+    allDates.forEach(date => {
+      const year = date.getFullYear();
+      const month = date.getMonth(); // 0-11 (January = 0)
+      
+      // Financial year starts in July (month 6)
+      let financialYear;
+      if (month >= 6) { // July to December
+        financialYear = `${year}-${year + 1}`;
+      } else { // January to June
+        financialYear = `${year - 1}-${year}`;
+      }
+      
+      financialYears.add(financialYear);
+    });
+
+    // Convert to sorted array (newest first)
+    const sortedYears = Array.from(financialYears).sort().reverse();
+
+    res.json({
+      status: "Success",
+      financialYears: sortedYears,
+      totalYears: sortedYears.length
+    });
+
+  } catch (error) {
+    console.error("Error getting available financial years:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to get available financial years",
+      error: error.message,
+    });
+  }
+};
+
+exports.downloadStatementPDF = async (req, res) => {
+  try {
+    const { financialYear } = req.query;
+    const userId = req.user._id;
+
+    // Validate financial year format
+    if (!financialYear || !/^\d{4}-\d{4}$/.test(financialYear)) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Please provide a valid financial year in format YYYY-YYYY (e.g., 2023-2024)",
+      });
+    }
+
+    const [startYear, endYear] = financialYear.split('-');
+    
+    // Validate that end year is start year + 1
+    if (parseInt(endYear) !== parseInt(startYear) + 1) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Invalid financial year format. End year must be start year + 1 (e.g., 2023-2024)",
+      });
+    }
+
+    // Generate the statement data first
+    const startDate = new Date(parseInt(startYear), 6, 1); // July 1st
+    const endDate = new Date(parseInt(startYear) + 1, 5, 30, 23, 59, 59); // June 30th
+
+    // Get all orders for the user in the financial year
+    const orders = await Order.find({
+      user: userId,
+      createdAt: { $gte: startDate, $lte: endDate },
+      paymentStatus: { $ne: "failed" }
+    }).sort({ createdAt: 1 });
+
+    // Get P2P donations for the user in the financial year
+    const goFundMeDonations = await GoFundMeDonation.find({
+      donorEmail: req.user.email,
+      createdAt: { $gte: startDate, $lte: endDate },
+      paymentStatus: "completed"
+    }).populate('goFundMeId', 'title slug');
+
+    // Check if user has any data for this financial year
+    if (orders.length === 0 && goFundMeDonations.length === 0) {
+      return res.status(404).json({
+        status: "Error",
+        message: "No donation data found for the specified financial year",
+      });
+    }
+
+    // Initialize statement data (same logic as generateStatement)
+    const statement = {
+      financialYear,
+      user: {
+        name: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(),
+        email: req.user.email,
+        userId: userId
+      },
+      period: {
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString()
+      },
+      summary: {
+        totalDonations: 0,
+        totalAmount: 0,
+        totalRecurringPayments: 0,
+        totalInstallmentPayments: 0,
+        totalOneTimePayments: 0,
+        totalP2PDonations: 0,
+        totalP2PAmount: 0
+      },
+      breakdown: {
+        oneTimePayments: [],
+        recurringPayments: [],
+        installmentPayments: [],
+        p2pDonations: []
+      },
+      monthlySummary: {},
+      paymentMethods: {}
+    };
+
+    // Process regular orders (same logic as generateStatement)
+    for (const order of orders) {
+      const orderData = {
+        donationId: order.donationId,
+        paymentType: order.paymentType,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        totalAmount: order.totalAmount,
+        createdAt: order.createdAt,
+        lastPaymentDate: order.lastPaymentDate,
+        donationType: order.donationType,
+        items: order.items
+      };
+
+      let actualPayments = 0;
+      let paymentHistory = [];
+
+      if (order.paymentType === 'single') {
+        if (order.paymentStatus === 'completed' || order.paymentStatus === 'succeeded') {
+          actualPayments = order.totalAmount;
+          paymentHistory.push({
+            date: order.createdAt,
+            amount: order.totalAmount,
+            status: order.paymentStatus
+          });
+        }
+      } else if (order.paymentType === 'recurring' && order.recurringDetails) {
+        const recurringPayments = order.recurringDetails.paymentHistory || [];
+        const yearPayments = recurringPayments.filter(payment => 
+          payment.date >= startDate && payment.date <= endDate && payment.status === 'succeeded'
+        );
+        
+        actualPayments = yearPayments.reduce((sum, payment) => sum + payment.amount, 0);
+        paymentHistory = yearPayments.map(payment => ({
+          date: payment.date,
+          amount: payment.amount,
+          status: payment.status,
+          invoiceId: payment.invoiceId
+        }));
+
+        orderData.recurringDetails = {
+          frequency: order.recurringDetails.frequency,
+          amount: order.recurringDetails.amount,
+          status: order.recurringDetails.status,
+          totalPayments: order.recurringDetails.totalPayments
+        };
+      } else if (order.paymentType === 'installments' && order.installmentDetails) {
+        const installmentPayments = order.installmentDetails.installmentHistory || [];
+        const yearInstallments = installmentPayments.filter(installment => 
+          installment.date >= startDate && installment.date <= endDate && installment.status === 'completed'
+        );
+        
+        actualPayments = yearInstallments.reduce((sum, installment) => sum + installment.amount, 0);
+        paymentHistory = yearInstallments.map(installment => ({
+          date: installment.date,
+          amount: installment.amount,
+          status: installment.status,
+          installmentNumber: installment.installmentNumber,
+          transactionId: installment.transactionId
+        }));
+
+        orderData.installmentDetails = {
+          numberOfInstallments: order.installmentDetails.numberOfInstallments,
+          installmentAmount: order.installmentDetails.installmentAmount,
+          installmentsPaid: order.installmentDetails.installmentsPaid,
+          status: order.installmentDetails.status
+        };
+      }
+
+      orderData.actualPayments = actualPayments;
+      orderData.paymentHistory = paymentHistory;
+
+      if (order.paymentType === 'single') {
+        statement.breakdown.oneTimePayments.push(orderData);
+        statement.summary.totalOneTimePayments += actualPayments;
+      } else if (order.paymentType === 'recurring') {
+        statement.breakdown.recurringPayments.push(orderData);
+        statement.summary.totalRecurringPayments += actualPayments;
+      } else if (order.paymentType === 'installments') {
+        statement.breakdown.installmentPayments.push(orderData);
+        statement.summary.totalInstallmentPayments += actualPayments;
+      }
+
+      if (!statement.paymentMethods[order.paymentMethod]) {
+        statement.paymentMethods[order.paymentMethod] = 0;
+      }
+      statement.paymentMethods[order.paymentMethod] += actualPayments;
+    }
+
+    // Process P2P donations
+    for (const donation of goFundMeDonations) {
+      const donationData = {
+        donationId: donation._id,
+        campaignTitle: donation.goFundMeId.title,
+        campaignSlug: donation.goFundMeId.slug,
+        amount: donation.amount,
+        netAmount: donation.netAmount,
+        transactionFee: donation.transactionFee,
+        paymentMethod: donation.paymentMethod,
+        isAnonymous: donation.isAnonymous,
+        message: donation.message,
+        createdAt: donation.createdAt,
+        donorName: donation.donorName
+      };
+
+      statement.breakdown.p2pDonations.push(donationData);
+      statement.summary.totalP2PDonations += 1;
+      statement.summary.totalP2PAmount += donation.amount;
+
+      if (!statement.paymentMethods[donation.paymentMethod]) {
+        statement.paymentMethods[donation.paymentMethod] = 0;
+      }
+      statement.paymentMethods[donation.paymentMethod] += donation.amount;
+    }
+
+    // Calculate totals
+    statement.summary.totalDonations = 
+      statement.breakdown.oneTimePayments.length +
+      statement.breakdown.recurringPayments.length +
+      statement.breakdown.installmentPayments.length +
+      statement.breakdown.p2pDonations.length;
+
+    statement.summary.totalAmount = 
+      statement.summary.totalOneTimePayments +
+      statement.summary.totalRecurringPayments +
+      statement.summary.totalInstallmentPayments +
+      statement.summary.totalP2PAmount;
+
+    // Generate monthly summary
+    const monthlyData = {};
+    for (let month = 0; month < 12; month++) {
+      const monthDate = new Date(startDate);
+      monthDate.setMonth(startDate.getMonth() + month);
+      const monthKey = monthDate.toISOString().slice(0, 7);
+      monthlyData[monthKey] = {
+        oneTimePayments: 0,
+        recurringPayments: 0,
+        installmentPayments: 0,
+        p2pDonations: 0,
+        totalAmount: 0
+      };
+    }
+
+    [...statement.breakdown.oneTimePayments, ...statement.breakdown.recurringPayments, 
+     ...statement.breakdown.installmentPayments].forEach(order => {
+      order.paymentHistory.forEach(payment => {
+        const monthKey = payment.date.toISOString().slice(0, 7);
+        if (monthlyData[monthKey]) {
+          if (order.paymentType === 'single') {
+            monthlyData[monthKey].oneTimePayments += payment.amount;
+          } else if (order.paymentType === 'recurring') {
+            monthlyData[monthKey].recurringPayments += payment.amount;
+          } else if (order.paymentType === 'installments') {
+            monthlyData[monthKey].installmentPayments += payment.amount;
+          }
+          monthlyData[monthKey].totalAmount += payment.amount;
+        }
+      });
+    });
+
+    statement.breakdown.p2pDonations.forEach(donation => {
+      const monthKey = donation.createdAt.toISOString().slice(0, 7);
+      if (monthlyData[monthKey]) {
+        monthlyData[monthKey].p2pDonations += donation.amount;
+        monthlyData[monthKey].totalAmount += donation.amount;
+      }
+    });
+
+    statement.monthlySummary = monthlyData;
+
+    // Generate statement ID
+    const statementId = `STMT-${financialYear.replace('-', '')}-${userId.toString().slice(-6)}-${Date.now()}`;
+    statement.statementId = statementId;
+    statement.generatedAt = new Date().toISOString();
+
+    // Generate PDF
+    const { filePath, fileName } = await generateStatementPDF(statement, req.user.email);
+
+    // Send the PDF file
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        console.error("Error sending PDF:", err);
+        res.status(500).json({
+          status: "Error",
+          message: "Failed to download PDF",
+          error: err.message,
+        });
+      }
+      
+      // Clean up the file after sending
+      setTimeout(() => {
+        const fs = require("fs");
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }, 5000); // Delete after 5 seconds
+    });
+
+  } catch (error) {
+    console.error("Error generating PDF statement:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to generate PDF statement",
       error: error.message,
     });
   }

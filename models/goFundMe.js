@@ -89,14 +89,17 @@ const goFundMeSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      enum: [
-        "medical",
-        "education",
-        "emergency",
-        "community",
-        "personal",
-        "other",
-      ],
+      // enum: [
+      //   "medical",
+      //   "education",
+      //   "emergency",
+      //   "community",
+      //   "personal",
+      //   "food",
+      //   "water",
+
+      //   "other",
+      // ],
       required: true,
     },
     urgencyLevel: {

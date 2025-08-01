@@ -212,6 +212,268 @@ const generateReceiptPDF = async (
 };
 
 /**
+ * Generates a PDF statement for a financial year
+ * @param {Object} statement - The statement data object
+ * @param {string} userEmail - User's email for file naming
+ * @returns {Promise<{filePath: string, fileName: string}>} - Path to the generated PDF
+ */
+const generateStatementPDF = async (statement, userEmail) => {
+  const fs = require("fs");
+  const path = require("path");
+
+  // Create uploads directory if it doesn't exist
+  const uploadsDir = path.join(__dirname, "../uploads/statements");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  // Generate unique filename
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const sanitizedEmail = userEmail.replace(/[^a-zA-Z0-9]/g, "");
+  let fileName = `statement-${statement.financialYear}-${sanitizedEmail}-${timestamp}`;
+  fileName += ".pdf";
+
+  const filePath = path.join(uploadsDir, fileName);
+
+  // Create a new PDF document
+  const doc = new PDFDocument({ margin: 50 });
+
+  // Pipe the PDF to the file
+  const stream = fs.createWriteStream(filePath);
+  doc.pipe(stream);
+
+  // Add header
+  doc.fontSize(24)
+     .font("Helvetica-Bold")
+     .text("Shahid Afridi Foundation", { align: "center" });
+  
+  doc.moveDown(0.5);
+  doc.fontSize(18)
+     .font("Helvetica")
+     .text("Financial Statement", { align: "center" });
+  
+  doc.moveDown(0.5);
+  doc.fontSize(14)
+     .text(`Financial Year: ${statement.financialYear}`, { align: "center" });
+
+  doc.moveDown(1);
+
+  // Add user information
+  doc.fontSize(12)
+     .font("Helvetica-Bold")
+     .text("Donor Information:");
+  
+  doc.fontSize(10)
+     .font("Helvetica")
+     .text(`Name: ${statement.user.name}`);
+  doc.text(`Email: ${statement.user.email}`);
+  doc.text(`Statement ID: ${statement.statementId}`);
+  doc.text(`Generated: ${new Date(statement.generatedAt).toLocaleDateString()}`);
+
+  doc.moveDown(1);
+
+  // Add period information
+  doc.fontSize(12)
+     .font("Helvetica-Bold")
+     .text("Statement Period:");
+  
+  doc.fontSize(10)
+     .font("Helvetica")
+     .text(`From: ${new Date(statement.period.startDate).toLocaleDateString()}`);
+  doc.text(`To: ${new Date(statement.period.endDate).toLocaleDateString()}`);
+
+  doc.moveDown(1);
+
+  // Add summary
+  doc.fontSize(14)
+     .font("Helvetica-Bold")
+     .text("Summary:", { underline: true });
+
+  doc.moveDown(0.5);
+  doc.fontSize(10)
+     .font("Helvetica")
+     .text(`Total Donations: ${statement.summary.totalDonations}`);
+  doc.text(`Total Amount: $${statement.summary.totalAmount.toFixed(2)}`);
+  doc.text(`One-Time Payments: $${statement.summary.totalOneTimePayments.toFixed(2)}`);
+  doc.text(`Recurring Payments: $${statement.summary.totalRecurringPayments.toFixed(2)}`);
+  doc.text(`Installment Payments: $${statement.summary.totalInstallmentPayments.toFixed(2)}`);
+  doc.text(`P2P Donations: $${statement.summary.totalP2PAmount.toFixed(2)} (${statement.summary.totalP2PDonations} donations)`);
+
+  doc.moveDown(1);
+
+  // Add payment methods breakdown
+  if (Object.keys(statement.paymentMethods).length > 0) {
+    doc.fontSize(12)
+       .font("Helvetica-Bold")
+       .text("Payment Methods Breakdown:", { underline: true });
+
+    doc.moveDown(0.5);
+    doc.fontSize(10)
+       .font("Helvetica");
+    
+    Object.entries(statement.paymentMethods).forEach(([method, amount]) => {
+      doc.text(`${method.charAt(0).toUpperCase() + method.slice(1)}: $${amount.toFixed(2)}`);
+    });
+
+    doc.moveDown(1);
+  }
+
+  // Add detailed breakdown
+  doc.fontSize(14)
+     .font("Helvetica-Bold")
+     .text("Detailed Breakdown:", { underline: true });
+
+  doc.moveDown(0.5);
+
+  // One-time payments
+  if (statement.breakdown.oneTimePayments.length > 0) {
+    doc.fontSize(12)
+       .font("Helvetica-Bold")
+       .text("One-Time Payments:");
+
+    doc.moveDown(0.5);
+    doc.fontSize(9)
+       .font("Helvetica");
+
+    statement.breakdown.oneTimePayments.forEach((payment, index) => {
+      doc.text(`${index + 1}. Donation ID: ${payment.donationId}`);
+      doc.text(`   Date: ${new Date(payment.createdAt).toLocaleDateString()}`);
+      doc.text(`   Amount: $${payment.actualPayments.toFixed(2)}`);
+      doc.text(`   Payment Method: ${payment.paymentMethod}`);
+      doc.text(`   Status: ${payment.paymentStatus}`);
+      doc.moveDown(0.3);
+    });
+
+    doc.moveDown(0.5);
+  }
+
+  // Recurring payments
+  if (statement.breakdown.recurringPayments.length > 0) {
+    doc.fontSize(12)
+       .font("Helvetica-Bold")
+       .text("Recurring Payments:");
+
+    doc.moveDown(0.5);
+    doc.fontSize(9)
+       .font("Helvetica");
+
+    statement.breakdown.recurringPayments.forEach((payment, index) => {
+      doc.text(`${index + 1}. Donation ID: ${payment.donationId}`);
+      doc.text(`   Frequency: ${payment.recurringDetails.frequency}`);
+      doc.text(`   Amount per payment: $${payment.recurringDetails.amount.toFixed(2)}`);
+      doc.text(`   Total paid this year: $${payment.actualPayments.toFixed(2)}`);
+      doc.text(`   Status: ${payment.recurringDetails.status}`);
+      
+      if (payment.paymentHistory.length > 0) {
+        doc.text(`   Payment History:`);
+        payment.paymentHistory.forEach((hist, histIndex) => {
+          doc.text(`     ${histIndex + 1}. ${new Date(hist.date).toLocaleDateString()} - $${hist.amount.toFixed(2)}`);
+        });
+      }
+      doc.moveDown(0.3);
+    });
+
+    doc.moveDown(0.5);
+  }
+
+  // Installment payments
+  if (statement.breakdown.installmentPayments.length > 0) {
+    doc.fontSize(12)
+       .font("Helvetica-Bold")
+       .text("Installment Payments:");
+
+    doc.moveDown(0.5);
+    doc.fontSize(9)
+       .font("Helvetica");
+
+    statement.breakdown.installmentPayments.forEach((payment, index) => {
+      doc.text(`${index + 1}. Donation ID: ${payment.donationId}`);
+      doc.text(`   Installment Amount: $${payment.installmentDetails.installmentAmount.toFixed(2)}`);
+      doc.text(`   Total installments: ${payment.installmentDetails.numberOfInstallments}`);
+      doc.text(`   Paid this year: $${payment.actualPayments.toFixed(2)}`);
+      doc.text(`   Status: ${payment.installmentDetails.status}`);
+      
+      if (payment.paymentHistory.length > 0) {
+        doc.text(`   Payment History:`);
+        payment.paymentHistory.forEach((hist, histIndex) => {
+          doc.text(`     ${histIndex + 1}. Installment ${hist.installmentNumber} - ${new Date(hist.date).toLocaleDateString()} - $${hist.amount.toFixed(2)}`);
+        });
+      }
+      doc.moveDown(0.3);
+    });
+
+    doc.moveDown(0.5);
+  }
+
+  // P2P donations
+  if (statement.breakdown.p2pDonations.length > 0) {
+    doc.fontSize(12)
+       .font("Helvetica-Bold")
+       .text("P2P Donations:");
+
+    doc.moveDown(0.5);
+    doc.fontSize(9)
+       .font("Helvetica");
+
+    statement.breakdown.p2pDonations.forEach((donation, index) => {
+      doc.text(`${index + 1}. Campaign: ${donation.campaignTitle}`);
+      doc.text(`   Date: ${new Date(donation.createdAt).toLocaleDateString()}`);
+      doc.text(`   Amount: $${donation.amount.toFixed(2)}`);
+      doc.text(`   Net Amount: $${donation.netAmount.toFixed(2)}`);
+      doc.text(`   Transaction Fee: $${donation.transactionFee.toFixed(2)}`);
+      doc.text(`   Payment Method: ${donation.paymentMethod}`);
+      if (donation.message) {
+        doc.text(`   Message: ${donation.message}`);
+      }
+      doc.moveDown(0.3);
+    });
+
+    doc.moveDown(0.5);
+  }
+
+  // Add monthly summary
+  doc.fontSize(14)
+     .font("Helvetica-Bold")
+     .text("Monthly Summary:", { underline: true });
+
+  doc.moveDown(0.5);
+  doc.fontSize(9)
+     .font("Helvetica");
+
+  Object.entries(statement.monthlySummary).forEach(([month, data]) => {
+    if (data.totalAmount > 0) {
+      const monthName = new Date(month + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+      doc.text(`${monthName}:`);
+      doc.text(`  One-Time: $${data.oneTimePayments.toFixed(2)}`);
+      doc.text(`  Recurring: $${data.recurringPayments.toFixed(2)}`);
+      doc.text(`  Installments: $${data.installmentPayments.toFixed(2)}`);
+      doc.text(`  P2P: $${data.p2pDonations.toFixed(2)}`);
+      doc.text(`  Total: $${data.totalAmount.toFixed(2)}`);
+      doc.moveDown(0.3);
+    }
+  });
+
+  // Add footer
+  doc.moveDown(2);
+  doc.fontSize(10)
+     .font("Helvetica")
+     .text("Thank you for your generous support of the Shahid Afridi Foundation.", { align: "center" });
+  
+  doc.moveDown(0.5);
+  doc.text("This statement is generated for your records and may be used for tax purposes.", { align: "center" });
+
+  // Finalize the PDF and end the stream
+  doc.end();
+
+  return new Promise((resolve, reject) => {
+    stream.on("finish", () => {
+      resolve({ filePath, fileName });
+    });
+    stream.on("error", reject);
+  });
+};
+
+/**
  * Gets table data based on payment type and options
  * @param {Object} order - The order object
  * @param {Number} installmentNumber - Specific installment number to show
@@ -628,6 +890,11 @@ const formatPaymentMethod = (method) => {
     card: "Credit/Debit Card",
     bank: "Bank Transfer",
     paypal: "PayPal",
+    visa: "Visa",
+    mastercard: "Mastercard",
+    amex: "American Express",
+    discover: "Discover",
+    stripe: "Credit/Debit Card", // fallback for legacy data
   };
 
   return methods[method] || method;
@@ -833,4 +1100,4 @@ const getBankTransferInstructions = (order) => {
   `;
 };
 
-module.exports = { generateReceiptPDF, sendReceiptEmail };
+module.exports = { generateReceiptPDF, sendReceiptEmail, generateStatementPDF };
