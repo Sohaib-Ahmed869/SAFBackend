@@ -2,7 +2,7 @@ const axios = require('axios');
 
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-const PAYPAL_BASE_URL = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
+const PAYPAL_BASE_URL = process.env.PAYPAL_BASE_URL || 'https://api-m.paypal.com';
 
 // Helper function to get frequency from PayPal plan ID
 function getFrequencyFromPayPalPlan(planId) {
@@ -18,7 +18,7 @@ function getFrequencyFromPayPalPlan(planId) {
 }
 
 // Get your actual frontend URL - replace with your production URL when deploying
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://shahidafridifoundation.org.au';
 
 // Get PayPal access token
 const getAccessToken = async () => {
