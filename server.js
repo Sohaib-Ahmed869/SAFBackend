@@ -57,6 +57,7 @@ app.use(
   })
 );
 app.use("/api/gofundme/webhook", express.raw({ type: "application/json" }));
+app.use("/api/subscriptions/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
 app.get("/", (req, res) => {

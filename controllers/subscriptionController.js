@@ -723,19 +723,30 @@ exports.updateSubscriptionEndDate = async (req, res) => {
 
 async function handlePaymentIntentSucceeded(paymentIntent) {
   try {
+    console.log(`\n💳 Processing payment_intent.succeeded`);
+    console.log(`📋 Payment Intent ID: ${paymentIntent.id}`);
+    console.log(`💰 Amount: $${(paymentIntent.amount / 100).toFixed(2)}`);
+    console.log(`📊 Status: ${paymentIntent.status}`);
+    console.log(`🏷️ Metadata:`, paymentIntent.metadata);
+    
     // Check if this is related to an order
     if (!paymentIntent.metadata || !paymentIntent.metadata.orderId) {
-      console.log("Payment intent without order metadata, ignoring");
+      console.log("⚠️ Payment intent without order metadata, ignoring");
       return;
     }
 
     const orderId = paymentIntent.metadata.orderId;
+    console.log(`🔍 Looking for order: ${orderId}`);
     const order = await Order.findById(orderId);
 
     if (!order) {
-      console.log(`No order found for payment intent ${paymentIntent.id}`);
+      console.log(`❌ No order found for payment intent ${paymentIntent.id}`);
       return;
     }
+    
+    console.log(`✅ Found order: ${order._id}`);
+    console.log(`📊 Order payment type: ${order.paymentType}`);
+    console.log(`💰 Order amount: $${order.totalAmount}`);
 
     // Handle installment payments
     if (
@@ -807,10 +818,13 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
     else if (order.paymentType === "single") {
       order.paymentStatus = "completed";
       await order.save();
-      console.log(`Updated one-time order ${orderId} to completed status`);
+      console.log(`✅ Updated one-time order ${orderId} to completed status`);
     }
+    
+    console.log(`🎉 Payment intent processing completed successfully`);
   } catch (error) {
-    console.error("Error handling payment_intent.succeeded:", error);
+    console.error("❌ Error handling payment_intent.succeeded:", error);
+    console.error(`Error details: ${error.message}`);
   }
 }
 
@@ -903,56 +917,108 @@ async function handlePaymentIntentFailed(paymentIntent) {
 
 // Stripe webhook handler
 exports.handleStripeWebhook = async (req, res) => {
+  console.log("\n" + "=".repeat(60));
+  console.log(" WEBHOOK RECEIVED");
+  console.log("=".repeat(60));
+  console.log(`Time: ${new Date().toISOString()}`);
+  console.log(`Method: ${req.method}`);
+  console.log(`URL: ${req.url}`);
+  console.log(`Headers:`, JSON.stringify(req.headers, null, 2));
+  console.log(`Body length: ${req.body ? req.body.length : 0} bytes`);
+  
   const signature = req.headers["stripe-signature"];
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
   let event;
 
+  // Check if we have the required data
+  if (!signature) {
+    console.error("ERROR: No Stripe signature found in headers");
+    return res.status(400).send("No signature provided");
+  }
+
+  if (!endpointSecret) {
+    console.error("ERROR: STRIPE_WEBHOOK_SECRET not configured");
+    return res.status(500).send("Webhook secret not configured");
+  }
+
+  if (!req.body || req.body.length === 0) {
+    console.error("ERROR: No webhook payload received");
+    return res.status(400).send("No webhook payload provided");
+  }
+
   try {
+    console.log("Verifying webhook signature...");
     // Verify the webhook signature
     event = stripe.webhooks.constructEvent(
-      req.rawBody, // You need to configure your Express app to provide raw body
+      req.body, // Using req.body since we're using express.raw()
       signature,
       endpointSecret
     );
+    console.log("Webhook signature verified successfully");
   } catch (err) {
-    console.error(`Webhook signature verification failed: ${err.message}`);
+    console.error("WEBHOOK SIGNATURE VERIFICATION FAILED");
+    console.error(`Error: ${err.message}`);
+    console.error(`Signature: ${signature ? signature.substring(0, 20) + '...' : 'MISSING'}`);
+    console.error(`Secret configured: ${endpointSecret ? 'YES' : 'NO'}`);
+    console.error(`Body length: ${req.body ? req.body.length : 0}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   // Handle different event types
   try {
-    console.log(`Processing webhook event: ${event.type}`);
+    console.log(`\nPROCESSING EVENT: ${event.type}`);
+    console.log(`Event ID: ${event.id}`);
+    console.log(`Created: ${new Date(event.created * 1000).toISOString()}`);
 
     switch (event.type) {
       // Subscription events
       case "invoice.payment_succeeded":
+        console.log("Processing invoice.payment_succeeded");
         await handleInvoicePaymentSucceeded(event.data.object);
+        console.log("invoice.payment_succeeded processed successfully");
         break;
       case "invoice.payment_failed":
+        console.log("Processing invoice.payment_failed");
         await handleInvoicePaymentFailed(event.data.object);
+        console.log("invoice.payment_failed processed successfully");
         break;
       case "customer.subscription.updated":
+        console.log("Processing customer.subscription.updated");
         await handleSubscriptionUpdated(event.data.object);
+        console.log("customer.subscription.updated processed successfully");
         break;
       case "customer.subscription.deleted":
+        console.log("Processing customer.subscription.deleted");
         await handleSubscriptionDeleted(event.data.object);
+        console.log("customer.subscription.deleted processed successfully");
         break;
 
       // Payment Intent events (for installments and one-time payments)
       case "payment_intent.succeeded":
+        console.log("Processing payment_intent.succeeded");
         await handlePaymentIntentSucceeded(event.data.object);
+        console.log("payment_intent.succeeded processed successfully");
         break;
       case "payment_intent.payment_failed":
+        console.log("Processing payment_intent.payment_failed");
         await handlePaymentIntentFailed(event.data.object);
+        console.log("payment_intent.payment_failed processed successfully");
         break;
 
       default:
-        console.log(`Unhandled event type ${event.type}`);
+        console.log(`Unhandled event type: ${event.type}`);
+        console.log(`Event data:`, JSON.stringify(event.data, null, 2));
     }
 
+    console.log("WEBHOOK PROCESSING COMPLETED SUCCESSFULLY");
+    console.log("=".repeat(60) + "\n");
     res.json({ received: true });
   } catch (error) {
-    console.error(`Error processing webhook: ${error.message}`);
+    console.error("WEBHOOK PROCESSING ERROR");
+    console.error(`Error type: ${error.constructor.name}`);
+    console.error(`Error message: ${error.message}`);
+    console.error(`Stack trace: ${error.stack}`);
+    console.error("=".repeat(60) + "\n");
     res.status(500).send(`Webhook processing error: ${error.message}`);
   }
 };
@@ -1021,6 +1087,13 @@ async function handleInvoicePaymentSucceeded(invoice) {
           order.paymentStatus = "active";
         }
 
+        // Ensure nextPaymentDate is null if it's new Date(0)
+        if (order.recurringDetails?.nextPaymentDate && order.recurringDetails.nextPaymentDate.getTime() === 0) {
+          console.log("DEBUG: nextPaymentDate is 1970-01-01, setting to null for order:", order._id);
+          order.recurringDetails.nextPaymentDate = null;
+        }
+
+        console.log("DEBUG: order.recurringDetails.nextPaymentDate before final save:", order.recurringDetails?.nextPaymentDate);
         await order.save();
         console.log(
           `Updated order ${order._id} with successful payment for invoice ${invoice.id}`
@@ -1094,6 +1167,13 @@ async function handleInvoicePaymentFailed(invoice) {
           order.paymentStatus = "failed";
         }
 
+        // Ensure nextPaymentDate is null if it's new Date(0)
+        if (order.recurringDetails?.nextPaymentDate && order.recurringDetails.nextPaymentDate.getTime() === 0) {
+          console.log("DEBUG: nextPaymentDate is 1970-01-01, setting to null for order:", order._id);
+          order.recurringDetails.nextPaymentDate = null;
+        }
+
+        console.log("DEBUG: order.recurringDetails.nextPaymentDate before final save:", order.recurringDetails?.nextPaymentDate);
         await order.save();
         console.log(
           `Updated order ${order._id} with failed payment for invoice ${invoice.id}`

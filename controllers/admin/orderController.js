@@ -711,19 +711,31 @@ exports.getDonations = async (req, res) => {
       sortOrder = "desc",
     } = req.query;
 
-    // Build filter conditions
-    const filter = {};
+    // Build filter conditions for orders
+    const orderFilter = {};
     if (status && status !== "All") {
-      filter.paymentStatus = status;
+      orderFilter.paymentStatus = status;
     }
     if (type && type !== "All") {
-      filter.paymentType = type;
+      orderFilter.paymentType = type;
     }
     if (search) {
-      filter.$or = [
+      orderFilter.$or = [
         { donationId: { $regex: search, $options: "i" } },
         { "donorDetails.name": { $regex: search, $options: "i" } },
         { "donorDetails.email": { $regex: search, $options: "i" } },
+      ];
+    }
+
+    // Build filter conditions for GoFundMe donations
+    const goFundMeFilter = {};
+    if (status && status !== "All") {
+      goFundMeFilter.paymentStatus = status;
+    }
+    if (search) {
+      goFundMeFilter.$or = [
+        { donorName: { $regex: search, $options: "i" } },
+        { donorEmail: { $regex: search, $options: "i" } },
       ];
     }
 
@@ -731,38 +743,54 @@ exports.getDonations = async (req, res) => {
     const sortConfig = {};
     sortConfig[sortBy] = sortOrder === "asc" ? 1 : -1;
 
-    // Execute query with pagination
-    const donations = await Order.find(filter)
-      .sort(sortConfig)
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .populate("user", "name email")
-      .lean();
+    // Execute queries with pagination
+    const [orders, goFundMeDonations] = await Promise.all([
+      Order.find(orderFilter)
+        .sort(sortConfig)
+        .populate("user", "name email")
+        .lean(),
+      GoFundMeDonation.find(goFundMeFilter)
+        .populate({
+          path: "goFundMeId",
+          select: "title slug category status currentAmount targetAmount image",
+          populate: {
+            path: "userId",
+            select: "name",
+          },
+        })
+        .lean()
+    ]);
 
-    // Get total count for pagination
-    const total = await Order.countDocuments(filter);
+    // Combine and format all donations
+    const allDonations = [];
 
-    // Format donations with additional fields
-    const formattedDonations = donations.map((donation) => {
+    // Format regular orders
+    orders.forEach((donation) => {
       const formatted = {
         id: donation._id,
+        donationId: donation.donationId || donation._id.toString().slice(-8),
         ...donation,
-        donor: donation.donorDetails?.name,
-        email: donation.donorDetails?.email,
-        amount: donation.totalAmount,
-        cause: donation.items[0]?.title || "Multiple Items",
+        donor: donation.donorDetails?.name || "Anonymous",
+        email: donation.donorDetails?.email || "",
+        amount: donation.totalAmount || 0,
+        cause: donation.items?.[0]?.title || "Multiple Items",
         date: donation.createdAt,
-        type: donation.paymentType,
-        status: donation.paymentStatus,
+        type: donation.paymentType || "single",
+        status: donation.paymentStatus || "pending",
+        donationType: "regular", // Flag to identify regular orders
         nextPaymentDate:
           donation.recurringDetails?.nextPaymentDate ||
-          donation.installmentDetails?.nextInstallmentDate,
-        // Add flag for pending cancellation
+          donation.installmentDetails?.nextInstallmentDate ||
+          null,
         isPendingCancellation: donation.paymentStatus === "pending_cancellation",
+        // Add missing fields for consistency
+        project: donation.items?.[0]?.title || "Multiple Items",
+        donationTypeName: donation.donationType || "Sadaqah",
+        onBehalfOf: donation.items?.[0]?.onBehalfOf || null,
       };
 
       // Add actual amount calculation
-      let actualAmount = donation.totalAmount;
+      let actualAmount = donation.totalAmount || 0;
       if (donation.paymentType === "installments" && donation.installmentDetails) {
         if (donation.installmentDetails.installmentHistory?.length > 0) {
           actualAmount = donation.installmentDetails.installmentHistory
@@ -782,11 +810,108 @@ exports.getDonations = async (req, res) => {
       }
       formatted.actualAmount = actualAmount;
 
-      return formatted;
+      allDonations.push(formatted);
     });
 
+    // Format GoFundMe donations
+    goFundMeDonations.forEach((donation) => {
+      const formatted = {
+        id: donation._id,
+        donationId: donation._id.toString().slice(-8), // Use last 8 chars as donation ID
+        _id: donation._id,
+        user: {
+          _id: null, // P2P donations don't have associated users
+          name: donation.donorName || "Anonymous",
+          email: donation.donorEmail || "",
+        },
+        items: [{
+          title: donation.goFundMeId?.title || "GoFundMe Campaign",
+          price: donation.amount || 0,
+          quantity: 1,
+          onBehalfOf: null,
+          _id: donation._id,
+        }],
+        paymentType: "single", // P2P donations are always single payments
+        donationType: "gofundme",
+        adminCostContribution: {
+          included: false,
+          amount: 0,
+        },
+        donorDetails: {
+          name: donation.donorName || "Anonymous",
+          phone: "",
+          email: donation.donorEmail || "",
+          address: {
+            street: "",
+            city: "",
+            state: "",
+            postcode: "",
+          },
+          agreeToMessages: false,
+        },
+        paymentMethod: donation.paymentMethod || "card",
+        paymentStatus: donation.paymentStatus || "completed", // Default to completed for P2P
+        totalAmount: donation.amount || 0,
+        recurringDetails: null,
+        installmentDetails: null,
+        receiptUrl: "",
+        pauseHistory: [],
+        amountHistory: [],
+        createdAt: donation.createdAt,
+        updatedAt: donation.updatedAt,
+        __v: donation.__v || 0,
+        lastPaymentDate: donation.createdAt, // Use creation date as last payment date
+        transactionDetails: {
+          stripeCustomerId: "",
+          stripeSubscriptionId: "",
+          stripeStatus: "completed",
+          clientSecret: "",
+        },
+        cancellationDetails: null,
+        donor: donation.donorName || "Anonymous",
+        email: donation.donorEmail || "",
+        amount: donation.amount || 0,
+        cause: donation.goFundMeId?.title || "GoFundMe Campaign",
+        date: donation.createdAt, // Use createdAt for consistent date formatting
+        type: "p2p",
+        status: donation.paymentStatus || "completed", // Default to completed
+        nextPaymentDate: null, // P2P donations don't have next payment dates
+        isPendingCancellation: false,
+        project: donation.goFundMeId?.title || "GoFundMe Campaign",
+        donationTypeName: "Sadaqah",
+        onBehalfOf: null,
+        actualAmount: donation.amount || 0,
+        // Additional P2P specific fields
+        message: donation.message || "",
+        isAnonymous: donation.isAnonymous || false,
+        transactionFee: donation.transactionFee || 0,
+        netAmount: donation.netAmount || donation.amount || 0,
+        goFundMe: donation.goFundMeId || null,
+      };
+
+      allDonations.push(formatted);
+    });
+
+    // Sort combined donations
+    allDonations.sort((a, b) => {
+      const aValue = a[sortBy];
+      const bValue = b[sortBy];
+      
+      if (sortOrder === "asc") {
+        return aValue > bValue ? 1 : -1;
+      } else {
+        return aValue < bValue ? 1 : -1;
+      }
+    });
+
+    // Apply pagination to combined results
+    const total = allDonations.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const paginatedDonations = allDonations.slice(startIndex, endIndex);
+
     res.json({
-      donations: formattedDonations,
+      donations: paginatedDonations,
       pagination: {
         total,
         pages: Math.ceil(total / limit),

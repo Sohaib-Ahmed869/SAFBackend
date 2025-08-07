@@ -6,6 +6,8 @@ const optionalAuth = require("../middleware/optionalAuth");
 
 // Public routes (no authentication required)
 router.post("/create", optionalAuth, orderController.createOrder); // Allow anonymous donations
+router.post("/confirm-payment", orderController.confirmPayment); // Confirm payment for quick donations
+router.post("/process-payment", orderController.processPayment); // Process payment after confirmation
 
 // Receipt upload route
 router.post("/upload-receipt", optionalAuth, orderController.uploadReceipt);

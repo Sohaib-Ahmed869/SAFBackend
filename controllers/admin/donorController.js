@@ -82,11 +82,21 @@ router.get("/dashboard/stats", isAdmin, async (req, res) => {
         totalDonated += expected;
         let paidAmt = 0;
         if (transactionDetails?.stripeSubscriptionId) {
-          const inv = await stripe.invoices.list({
-            subscription: transactionDetails.stripeSubscriptionId,
-            status: "paid", limit: 100
-          });
-          paidAmt = inv.data.reduce((s,i) => s + i.amount_paid/100, 0);
+          try {
+            const inv = await stripe.invoices.list({
+              subscription: transactionDetails.stripeSubscriptionId,
+              status: "paid", limit: 100
+            });
+            paidAmt = inv.data.reduce((s,i) => s + i.amount_paid/100, 0);
+          } catch (stripeError) {
+            console.warn(`Failed to fetch invoices for subscription ${transactionDetails.stripeSubscriptionId}:`, stripeError.message);
+            // Fall back to local payment history
+            if (Array.isArray(recurringDetails.paymentHistory)) {
+              paidAmt = recurringDetails.paymentHistory
+                .filter(p => ["succeeded","completed"].includes(p.status))
+                .reduce((s,p) => s + (p.amount||0), 0);
+            }
+          }
         }
         if (!paidAmt && Array.isArray(recurringDetails.paymentHistory)) {
           paidAmt = recurringDetails.paymentHistory

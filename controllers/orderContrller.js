@@ -461,6 +461,8 @@ exports.createOrder = async (req, res) => {
     } = req.body;
 
     console.log("Received order data:", req.body);
+    console.log("🔍 DEBUG: stripePaymentMethodId received:", stripePaymentMethodId);
+    console.log("🔍 DEBUG: Full request body:", JSON.stringify(req.body, null, 2));
 
     // Validate required fields
     if (!items || !paymentType || !donorDetails) {
@@ -703,9 +705,9 @@ exports.createOrder = async (req, res) => {
           const paymentIntent = await stripe.paymentIntents.create({
             amount: Math.round(totalAmount * 100),
             currency: "aud",
-            payment_method: stripePaymentMethodId,
-            confirm: true,
-            off_session: true,
+            automatic_payment_methods: {
+              enabled: true,
+            },
             description: `Donation ${savedOrder.donationId}`,
             metadata: {
               donationId: savedOrder.donationId,
@@ -714,31 +716,24 @@ exports.createOrder = async (req, res) => {
           });
 
           savedOrder.transactionDetails = {
-            stripePaymentMethodId,
             stripePaymentIntentId: paymentIntent.id,
             stripeStatus: paymentIntent.status,
             clientSecret: paymentIntent.client_secret,
           };
 
-          if (paymentIntent.status === "succeeded") {
-            try {
-              await sendReceiptEmail(savedOrder);
-            } catch (emailError) {
-              console.error("Failed to send receipt email:", emailError);
-            }
-            savedOrder.paymentStatus = "completed";
-          } else if (paymentIntent.status === "failed") {
-            savedOrder.paymentStatus = "failed";
-          }
-
+          // Payment intent created but not confirmed yet
+          // Frontend will handle confirmation using client_secret
+          savedOrder.paymentStatus = "pending";
           await savedOrder.save();
         } else if (paymentType === "recurring") {
           // Recurring payment processing
           let customer;
           try {
+            console.log(`🔍 Validating payment method: ${stripePaymentMethodId}`);
             const paymentMethodObj = await stripe.paymentMethods.retrieve(
               stripePaymentMethodId
             );
+            console.log(` Payment method ${stripePaymentMethodId} is valid`);
             if (paymentMethodObj.customer) {
               console.log(
                 `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethodObj.customer}`
@@ -1044,6 +1039,13 @@ exports.createOrder = async (req, res) => {
             savedOrder.paymentStatus = "pending";
           }
 
+          // Ensure nextPaymentDate is null if it's new Date(0)
+          if (savedOrder.recurringDetails?.nextPaymentDate && savedOrder.recurringDetails.nextPaymentDate.getTime() === 0) {
+            console.log("DEBUG: nextPaymentDate is 1970-01-01, setting to null for order:", savedOrder._id);
+            savedOrder.recurringDetails.nextPaymentDate = null;
+          }
+
+          console.log("DEBUG: savedOrder.recurringDetails.nextPaymentDate before final save:", savedOrder.recurringDetails?.nextPaymentDate);
           await savedOrder.save();
         } else if (paymentType === "installments") {
           // Installment processing
@@ -1214,6 +1216,7 @@ exports.createOrder = async (req, res) => {
         installmentDetails:
           paymentType === "installments" ? orderInstallmentDetails : undefined,
         transactionDetails: savedOrder.transactionDetails,
+        clientSecret: savedOrder.transactionDetails.clientSecret,
         paymentInstructions:
           paymentMethod === "bank"
             ? {
@@ -2089,7 +2092,33 @@ exports.processNextInstallment = async (orderId) => {
     // Process payment with Stripe.
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-    // Now create and confirm the payment intent with explicit payment method
+    // Validate payment method exists before using it
+    let paymentMethod;
+    try {
+      paymentMethod = await stripe.paymentMethods.retrieve(
+        order.transactionDetails.stripePaymentMethodId
+      );
+      console.log(`✅ Payment method ${order.transactionDetails.stripePaymentMethodId} exists`);
+    } catch (pmError) {
+      console.error(`❌ Payment method ${order.transactionDetails.stripePaymentMethodId} not found:`, pmError.message);
+      
+      // Try to get the customer's default payment method instead
+      try {
+        const customer = await stripe.customers.retrieve(order.transactionDetails.stripeCustomerId);
+        if (customer.invoice_settings?.default_payment_method) {
+          console.log(`🔄 Using customer's default payment method: ${customer.invoice_settings.default_payment_method}`);
+          paymentMethod = await stripe.paymentMethods.retrieve(customer.invoice_settings.default_payment_method);
+          order.transactionDetails.stripePaymentMethodId = customer.invoice_settings.default_payment_method;
+        } else {
+          throw new Error("No valid payment method found for customer");
+        }
+      } catch (customerError) {
+        console.error("❌ Error getting customer's default payment method:", customerError.message);
+        throw new Error(`Payment method not found and no fallback available: ${pmError.message}`);
+      }
+    }
+
+    // Now create and confirm the payment intent with validated payment method
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(order.installmentDetails.installmentAmount * 100),
       currency: "aud",
@@ -3033,6 +3062,151 @@ exports.downloadStatementPDF = async (req, res) => {
     res.status(500).json({
       status: "Error",
       message: "Failed to generate PDF statement",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Confirm payment for quick donation
+// @route   POST /api/orders/confirm-payment
+// @access  Public
+exports.confirmPayment = async (req, res) => {
+  try {
+    const { paymentIntentId } = req.body;
+
+    if (!paymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment intent ID is required",
+      });
+    }
+
+    // Retrieve payment intent from Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status !== "succeeded") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment not completed",
+      });
+    }
+
+    // Find the order using the payment intent ID
+    const order = await Order.findOne({
+      "transactionDetails.stripePaymentIntentId": paymentIntentId,
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    // Update order status
+    order.paymentStatus = "completed";
+    order.transactionDetails.stripeStatus = paymentIntent.status;
+    await order.save();
+
+    // Send receipt email
+    try {
+      await sendReceiptEmail(order);
+    } catch (emailError) {
+      console.error("Failed to send receipt email:", emailError);
+    }
+
+    res.json({
+      success: true,
+      message: "Payment confirmed successfully",
+      order: {
+        _id: order._id,
+        donationId: order.donationId,
+        paymentStatus: order.paymentStatus,
+      },
+    });
+  } catch (error) {
+    console.error("Error confirming payment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Process order after successful payment
+// @route   POST /api/orders/process-payment
+// @access  Public
+exports.processPayment = async (req, res) => {
+  try {
+    const { paymentIntentId } = req.body;
+
+    if (!paymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment intent ID is required",
+      });
+    }
+
+    // Retrieve payment intent from Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status !== "succeeded") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment not completed",
+      });
+    }
+
+    // Find the order using the payment intent ID
+    const order = await Order.findOne({
+      "transactionDetails.stripePaymentIntentId": paymentIntentId,
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    // Check if order is already processed
+    if (order.paymentStatus === "completed") {
+      return res.json({
+        success: true,
+        message: "Order already processed",
+        order: order,
+        alreadyProcessed: true,
+      });
+    }
+
+    // Update order status
+    order.paymentStatus = "completed";
+    order.transactionDetails.stripeStatus = paymentIntent.status;
+    await order.save();
+
+    // Send receipt email
+    try {
+      await sendReceiptEmail(order);
+    } catch (emailError) {
+      console.error("Failed to send receipt email:", emailError);
+    }
+
+    res.json({
+      success: true,
+      message: "Payment processed successfully",
+      order: {
+        _id: order._id,
+        donationId: order.donationId,
+        paymentStatus: order.paymentStatus,
+        totalAmount: order.totalAmount,
+      },
+    });
+  } catch (error) {
+    console.error("Error processing payment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
       error: error.message,
     });
   }
