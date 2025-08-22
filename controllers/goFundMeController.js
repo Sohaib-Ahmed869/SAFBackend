@@ -468,7 +468,7 @@ exports.createDonationPaymentIntent = async (req, res) => {
     // Create payment intent
     const paymentIntent = await stripe.paymentIntents.create({
       amount: stripeAmount,
-      currency: "usd",
+      currency: "aud",
       automatic_payment_methods: {
         enabled: true,
       },
