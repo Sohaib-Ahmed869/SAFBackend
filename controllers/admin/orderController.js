@@ -832,7 +832,7 @@ exports.getDonations = async (req, res) => {
           _id: donation._id,
         }],
         paymentType: "single", // P2P donations are always single payments
-        donationType: "gofundme",
+        donationType: "campaign",
         adminCostContribution: {
           included: false,
           amount: 0,
@@ -873,12 +873,12 @@ exports.getDonations = async (req, res) => {
         amount: donation.amount || 0,
         cause: donation.goFundMeId?.title || "GoFundMe Campaign",
         date: donation.createdAt, // Use createdAt for consistent date formatting
-        type: "p2p",
+        type: "campaign",
         status: donation.paymentStatus || "completed", // Default to completed
         nextPaymentDate: null, // P2P donations don't have next payment dates
         isPendingCancellation: false,
         project: donation.goFundMeId?.title || "GoFundMe Campaign",
-        donationTypeName: "Sadaqah",
+        donationTypeName: "Campaign",
         onBehalfOf: null,
         actualAmount: donation.amount || 0,
         // Additional P2P specific fields
@@ -1036,20 +1036,143 @@ exports.getDonationForUser = async (req, res) => {
 exports.getDonationById = async (req, res) => {
   try {
     const { id } = req.params;
-    const donation = await Order.findById(id)
+    
+    console.log(`🔍 Looking for donation with ID: ${id}`);
+    
+    // First try to find in regular orders
+    let donation = await Order.findById(id)
       .populate("user", "name email")
       .lean();
 
-    if (!donation) {
-      return res.status(404).json({
-        status: "Error",
-        message: "Donation not found",
+    if (donation) {
+      console.log(`✅ Found regular order donation: ${donation.donationId || donation._id}`);
+      
+      // Format regular order donation
+      const formattedDonation = {
+        ...donation,
+        donationType: "regular",
+        donor: donation.donorDetails?.name || "Anonymous",
+        email: donation.donorDetails?.email || "",
+        amount: donation.totalAmount || 0,
+        cause: donation.items?.[0]?.title || "Multiple Items",
+        date: donation.createdAt,
+        type: donation.paymentType || "single",
+        status: donation.paymentStatus || "pending",
+        project: donation.items?.[0]?.title || "Multiple Items",
+        donationTypeName: donation.donationType || "Sadaqah",
+        onBehalfOf: donation.items?.[0]?.onBehalfOf || null,
+      };
+
+      return res.json({
+        donation: formattedDonation,
       });
     }
 
-    res.json({
-      donation,
+    // If not found in orders, try GoFundMe donations
+    console.log(`🔍 Not found in orders, checking GoFundMe donations...`);
+    donation = await GoFundMeDonation.findById(id)
+      .populate({
+        path: "goFundMeId",
+        select: "title slug category status currentAmount targetAmount image",
+        populate: {
+          path: "userId",
+          select: "name",
+        },
+      })
+      .lean();
+
+    if (donation) {
+      console.log(`✅ Found GoFundMe donation for campaign: ${donation.goFundMeId?.title}`);
+      
+      // Format GoFundMe donation to match regular donation structure
+      const formattedDonation = {
+        id: donation._id,
+        donationId: donation._id.toString().slice(-8),
+        _id: donation._id,
+        user: {
+          _id: null, // P2P donations don't have associated users
+          name: donation.donorName || "Anonymous",
+          email: donation.donorEmail || "",
+        },
+        items: [{
+          title: donation.goFundMeId?.title || "GoFundMe Campaign",
+          price: donation.amount || 0,
+          quantity: 1,
+          onBehalfOf: null,
+          _id: donation._id,
+        }],
+        paymentType: "single",
+        donationType: "campaign",
+        adminCostContribution: {
+          included: false,
+          amount: 0,
+        },
+        donorDetails: {
+          name: donation.donorName || "Anonymous",
+          phone: "",
+          email: donation.donorEmail || "",
+          address: {
+            street: "",
+            city: "",
+            state: "",
+            postcode: "",
+          },
+          agreeToMessages: false,
+        },
+        paymentMethod: donation.paymentMethod || "card",
+        paymentStatus: donation.paymentStatus || "completed",
+        totalAmount: donation.amount || 0,
+        recurringDetails: null,
+        installmentDetails: null,
+        receiptUrl: "",
+        pauseHistory: [],
+        amountHistory: [],
+        createdAt: donation.createdAt,
+        updatedAt: donation.updatedAt,
+        __v: donation.__v || 0,
+        lastPaymentDate: donation.createdAt,
+        transactionDetails: {
+          stripeCustomerId: "",
+          stripeSubscriptionId: "",
+          stripeStatus: "completed",
+          clientSecret: "",
+        },
+        cancellationDetails: null,
+        donor: donation.donorName || "Anonymous",
+        email: donation.donorEmail || "",
+        amount: donation.amount || 0,
+        cause: donation.goFundMeId?.title || "GoFundMe Campaign",
+        date: donation.createdAt,
+        type: "p2p",
+        status: donation.paymentStatus || "completed",
+        nextPaymentDate: null,
+        isPendingCancellation: false,
+        project: donation.goFundMeId?.title || "GoFundMe Campaign",
+        donationTypeName: "Campaign",
+        onBehalfOf: null,
+        actualAmount: donation.amount || 0,
+        // Additional P2P specific fields
+        message: donation.message || "",
+        isAnonymous: donation.isAnonymous || false,
+        transactionFee: donation.transactionFee || 0,
+        netAmount: donation.netAmount || donation.amount || 0,
+        goFundMe: donation.goFundMeId || null,
+        // Campaign details
+        campaign: donation.goFundMeId || null,
+      };
+
+      return res.json({
+        donation: formattedDonation,
+      });
+    }
+
+    // If not found in either collection
+    console.log(`❌ Donation not found in either orders or GoFundMe donations`);
+    return res.status(404).json({
+      status: "Error",
+      message: "Donation not found in either regular orders or GoFundMe donations",
     });
+
   } catch (error) {
     console.error("Error fetching donation:", error);
     res.status(500).json({

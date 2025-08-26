@@ -102,6 +102,10 @@ const goFundMeSchema = new mongoose.Schema(
       // ],
       required: true,
     },
+    customCategory: {
+      type: String,
+      trim: true,
+    },
     urgencyLevel: {
       type: String,
       enum: ["low", "medium", "high", "critical"],

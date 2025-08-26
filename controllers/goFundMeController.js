@@ -23,15 +23,19 @@ const sendAdminNotification = async (goFundMe, user) => {
     const adminUser = await User.findOne({ role: "admin" });
     
     // Create email body first
+    const requesterName = user?.name || goFundMe.userId?.name || "Anonymous";
+    const requesterEmail = user?.email || goFundMe.userId?.email || "";
+    const requesterId = user?._id || goFundMe.userId?._id || "";
+
     const adminEmailBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="text-align: center; padding: 20px 0;">
           <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
         </div>
         
-        <h2 style="color: #4a7c59;">New GoFundMe Campaign Request</h2>
+        <h2 style="color: #4a7c59;">New P2P Campaign Request</h2>
         
-        <p>A new GoFundMe campaign request has been submitted and requires your review.</p>
+        <p>A new P2P campaign request has been submitted and requires your review.</p>
         
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Campaign Details:</h3>
@@ -45,9 +49,9 @@ const sendAdminNotification = async (goFundMe, user) => {
         
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Requester Details:</h3>
-          <p><strong>Name:</strong> ${user.name}</p>
-          <p><strong>Email:</strong> ${user.email}</p>
-          <p><strong>User ID:</strong> ${user._id}</p>
+          <p><strong>Name:</strong> ${requesterName}</p>
+          <p><strong>Email:</strong> ${requesterEmail}</p>
+          <p><strong>User ID:</strong> ${requesterId}</p>
         </div>
         
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -62,9 +66,10 @@ const sendAdminNotification = async (goFundMe, user) => {
           <strong>Action Required:</strong> Please review this campaign request through the admin panel and approve or reject it accordingly.
         </p>
         
-        <p style="color: #666; font-size: 12px; margin-top: 30px;">
-          This is an automated notification from the Shahid Afridi Foundation GoFundMe system.
-        </p>
+        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #777;">
+          <p>Shahid Afridi Foundation Ltd | ABN: 97 642 657 010<br>
+          <a href="http://www.shahidafridifoundation.org.au/">www.shahidafridifoundation.org.au</a> | <a href="mailto:info@ShahidAfridiFoundation.org.au">info@ShahidAfridiFoundation.org.au</a> | 1300 SAF AUS (1300 723 287)</p>
+        </div>
       </div>
     `;
 
@@ -74,7 +79,7 @@ const sendAdminNotification = async (goFundMe, user) => {
       return await sendEmail(
         fallbackEmail,
         adminEmailBody,
-        "New GoFundMe Campaign Request - Shahid Afridi Foundation"
+        "New P2P Campaign Request - Shahid Afridi Foundation"
       );
     }
     
@@ -83,7 +88,7 @@ const sendAdminNotification = async (goFundMe, user) => {
     const emailResult = await sendEmail(
       adminEmail,
       adminEmailBody,
-      "New GoFundMe Campaign Request - Shahid Afridi Foundation"
+      "New P2P Campaign Request - Shahid Afridi Foundation"
     );
 
     console.log("Email result:", emailResult);
@@ -117,7 +122,7 @@ const sendUserNotification = async (goFundMe, status, adminNotes) => {
           <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
         </div>
         
-        <h2 style="color: ${statusColor};">GoFundMe Campaign ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}</h2>
+        <h2 style="color: ${statusColor};">P2P Campaign ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}</h2>
         
         <p>Dear ${user.name},</p>
         
@@ -157,7 +162,7 @@ const sendUserNotification = async (goFundMe, status, adminNotes) => {
     await sendEmail(
       user.email,
       userEmailBody,
-      `GoFundMe Campaign ${statusText.charAt(0).toUpperCase() + statusText.slice(1)} - Shahid Afridi Foundation`
+      `P2P Campaign ${statusText.charAt(0).toUpperCase() + statusText.slice(1)} - Shahid Afridi Foundation`
     );
 
     console.log("User notification sent for GoFundMe review:", goFundMe._id);
@@ -180,8 +185,12 @@ exports.createGoFundMe = async (req, res) => {
       targetAmount,
       category,
       customCategory,
+      otherCategory,
       urgencyLevel,
     } = req.body;
+
+    // Normalize custom category from either key
+    const normalizedCustomCategory = (customCategory || otherCategory || "").trim();
 
     // Validate required fields
     if (
@@ -199,8 +208,8 @@ exports.createGoFundMe = async (req, res) => {
       });
     }
 
-    // Validate customCategory when category is "other"
-    if (category === "other" && !customCategory) {
+    // Validate custom category when category is "other"
+    if (category === "other" && !normalizedCustomCategory) {
       return res.status(400).json({
         success: false,
         message: "Custom category is required when 'other' is selected",
@@ -239,7 +248,7 @@ exports.createGoFundMe = async (req, res) => {
       reasonForFunding,
       targetAmount: Number.parseFloat(targetAmount),
       category,
-      customCategory: category === "other" ? customCategory : undefined,
+      customCategory: category === "other" ? normalizedCustomCategory : undefined,
       urgencyLevel: urgencyLevel || "medium",
       image: req.file.location,
       imagePath: req.file.key,
@@ -588,6 +597,36 @@ exports.processDonation = async (req, res) => {
     }
 
     await goFundMe.save();
+
+    // Send donor confirmation email with SAF header/footer
+    try {
+      const donorEmailBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="text-align: center; padding: 20px 0;">
+            <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+          </div>
+
+          <h2 style="color: #4a7c59;">Thank you for your donation!</h2>
+          <p>Dear ${donorName || "Donor"},</p>
+          <p>We have received your generous donation to <strong>${goFundMe.title}</strong>.</p>
+          <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h3 style="margin-top: 0;">Donation Details:</h3>
+            <p><strong>Campaign:</strong> ${goFundMe.title}</p>
+            <p><strong>Amount:</strong> $${(paymentIntent.amount / 100).toFixed(2)} AUD</p>
+            <p><strong>Payment Method:</strong> ${cardType}</p>
+            <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+          </div>
+          <p>Your support helps us make a difference. Thank you!</p>
+          <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #777;">
+            <p>Shahid Afridi Foundation Ltd | ABN: 97 642 657 010<br>
+            <a href="http://www.shahidafridifoundation.org.au/">www.shahidafridifoundation.org.au</a> | <a href="mailto:info@ShahidAfridiFoundation.org.au">info@ShahidAfridiFoundation.org.au</a> | 1300 SAF AUS (1300 723 287)</p>
+          </div>
+        </div>
+      `;
+      await sendEmail(donorEmail, donorEmailBody, "Thank you for your donation - Shahid Afridi Foundation");
+    } catch (emailErr) {
+      console.error("Failed to send P2P donor email:", emailErr.message);
+    }
 
     res.json({
       success: true,
