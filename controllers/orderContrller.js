@@ -1677,8 +1677,8 @@ exports.getOrderStats = async (req, res) => {
       cancelledOrders: validOrders.filter(
         (order) => order.paymentStatus === "cancelled"
       ).length,
-      // Monthly stats
-      monthlyStats: await getMonthlyStats(validOrders, stripe),
+      // Monthly stats (filter to requested or current month)
+      monthlyStats: await getMonthlyStats(validOrders, stripe, req.query.month),
       // Add average donation (including GoFundMe donations)
       averageDonation:
         (validOrders.length + goFundMeDonations.length) > 0
@@ -1755,37 +1755,33 @@ const calculateRecurringTotalAmount = (order) => {
   return totalPayments * amount;
 };
 
-const getMonthlyStats = async (orders, stripe) => {
-  const monthlyData = {};
+const getMonthlyStats = async (orders, stripe, requestedMonth) => {
+  // Determine month filter once (YYYY-MM)
+  const monthFilter = (requestedMonth || (() => {
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    return `${now.getFullYear()}-${mm}`;
+  })());
+
+  // Collect per-day totals within the requested month
+  const dailyData = {}; // { 'YYYY-MM-DD': { total, count } }
 
   // First, process all orders
   for (const order of orders) {
     const initialDate = new Date(order.createdAt);
-    const initialMonthYear = `${initialDate.getFullYear()}-${String(
-      initialDate.getMonth() + 1
-    ).padStart(2, "0")}`;
-
-    if (!monthlyData[initialMonthYear]) {
-      monthlyData[initialMonthYear] = {
-        total: 0,
-        count: 0,
-        recurring: 0,
-        oneTime: 0,
-      };
-    }
-
-    // Always count the order itself in the creation month
-    monthlyData[initialMonthYear].count += 1;
+    const initialMonthYear = `${initialDate.getFullYear()}-${String(initialDate.getMonth() + 1).padStart(2, "0")}`;
+    const initialDay = `${initialDate.getFullYear()}-${String(initialDate.getMonth() + 1).padStart(2, "0")}-${String(initialDate.getDate()).padStart(2, "0")}`;
 
     // For one-time payments, add the full amount to the creation month
     if (order.paymentType === "single") {
-      monthlyData[initialMonthYear].total += order.totalAmount;
-      monthlyData[initialMonthYear].oneTime += 1;
+      if (initialMonthYear === monthFilter) {
+        if (!dailyData[initialDay]) dailyData[initialDay] = { total: 0, count: 0 };
+        dailyData[initialDay].total += order.totalAmount;
+        dailyData[initialDay].count += 1;
+      }
     }
     // For recurring/installments, mark as recurring in the creation month
     else {
-      monthlyData[initialMonthYear].recurring += 1;
-
       // Handle recurring payments by fetching Stripe data if possible
       if (
         order.paymentType === "recurring" &&
@@ -1808,17 +1804,13 @@ const getMonthlyStats = async (orders, stripe) => {
             const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
               paymentDate.getMonth() + 1
             ).padStart(2, "0")}`;
+            const paymentDay = `${paymentDate.getFullYear()}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}-${String(paymentDate.getDate()).padStart(2, "0")}`;
 
-            if (!monthlyData[paymentMonthYear]) {
-              monthlyData[paymentMonthYear] = {
-                total: 0,
-                count: 0,
-                recurring: 0,
-                oneTime: 0,
-              };
+            if (paymentMonthYear === monthFilter) {
+              if (!dailyData[paymentDay]) dailyData[paymentDay] = { total: 0, count: 0 };
+              dailyData[paymentDay].total += invoice.amount_paid / 100; // Convert from cents
+              dailyData[paymentDay].count += 1;
             }
-
-            monthlyData[paymentMonthYear].total += invoice.amount_paid / 100; // Convert from cents
           }
         } catch (stripeError) {
           console.error("Error fetching Stripe invoice data:", stripeError);
@@ -1834,17 +1826,13 @@ const getMonthlyStats = async (orders, stripe) => {
                 const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
                   paymentDate.getMonth() + 1
                 ).padStart(2, "0")}`;
+                const paymentDay = `${paymentDate.getFullYear()}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}-${String(paymentDate.getDate()).padStart(2, "0")}`;
 
-                if (!monthlyData[paymentMonthYear]) {
-                  monthlyData[paymentMonthYear] = {
-                    total: 0,
-                    count: 0,
-                    recurring: 0,
-                    oneTime: 0,
-                  };
+                if (paymentMonthYear === monthFilter) {
+                  if (!dailyData[paymentDay]) dailyData[paymentDay] = { total: 0, count: 0 };
+                  dailyData[paymentDay].total += payment.amount;
+                  dailyData[paymentDay].count += 1;
                 }
-
-                monthlyData[paymentMonthYear].total += payment.amount;
               });
           }
         }
@@ -1869,22 +1857,21 @@ const getMonthlyStats = async (orders, stripe) => {
               const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
                 paymentDate.getMonth() + 1
               ).padStart(2, "0")}`;
+              const paymentDay = `${paymentDate.getFullYear()}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}-${String(paymentDate.getDate()).padStart(2, "0")}`;
 
-              if (!monthlyData[paymentMonthYear]) {
-                monthlyData[paymentMonthYear] = {
-                  total: 0,
-                  count: 0,
-                  recurring: 0,
-                  oneTime: 0,
-                };
+              if (paymentMonthYear === monthFilter) {
+                if (!dailyData[paymentDay]) dailyData[paymentDay] = { total: 0, count: 0 };
+                dailyData[paymentDay].total += installment.amount;
+                dailyData[paymentDay].count += 1;
               }
-
-              monthlyData[paymentMonthYear].total += installment.amount;
             });
         } else {
-          // If no installment history, just add first installment to creation month
-          monthlyData[initialMonthYear].total +=
-            order.installmentDetails.installmentAmount;
+          // If no history, and creation month matches filter, add first installment to creation day
+          if (initialMonthYear === monthFilter) {
+            if (!dailyData[initialDay]) dailyData[initialDay] = { total: 0, count: 0 };
+            dailyData[initialDay].total += order.installmentDetails.installmentAmount;
+            dailyData[initialDay].count += 1;
+          }
         }
       }
       // Fall back for recurring payments without Stripe ID
@@ -1902,33 +1889,33 @@ const getMonthlyStats = async (orders, stripe) => {
               const paymentMonthYear = `${paymentDate.getFullYear()}-${String(
                 paymentDate.getMonth() + 1
               ).padStart(2, "0")}`;
+              const paymentDay = `${paymentDate.getFullYear()}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}-${String(paymentDate.getDate()).padStart(2, "0")}`;
 
-              if (!monthlyData[paymentMonthYear]) {
-                monthlyData[paymentMonthYear] = {
-                  total: 0,
-                  count: 0,
-                  recurring: 0,
-                  oneTime: 0,
-                };
+              if (paymentMonthYear === monthFilter) {
+                if (!dailyData[paymentDay]) dailyData[paymentDay] = { total: 0, count: 0 };
+                dailyData[paymentDay].total += payment.amount;
+                dailyData[paymentDay].count += 1;
               }
-
-              monthlyData[paymentMonthYear].total += payment.amount;
             });
         } else {
-          // If no payment history, just add first payment to creation month
-          monthlyData[initialMonthYear].total += order.recurringDetails.amount;
+          // If no payment history, and creation month matches, add first payment to creation day
+          if (initialMonthYear === monthFilter) {
+            if (!dailyData[initialDay]) dailyData[initialDay] = { total: 0, count: 0 };
+            dailyData[initialDay].total += order.recurringDetails.amount;
+            dailyData[initialDay].count += 1;
+          }
         }
       }
     }
   }
 
-  // Convert to array and sort by date
-  return Object.entries(monthlyData)
-    .map(([month, data]) => ({
-      month,
-      ...data,
-    }))
-    .sort((a, b) => b.month.localeCompare(a.month));
+  // Convert to array of daily entries within the month, sorted ascending by date
+  const dailyArray = Object.entries(dailyData)
+    .map(([date, data]) => ({ date, total: Number(data.total.toFixed(2)), count: data.count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // Return daily breakdown if any; otherwise return empty array
+  return dailyArray;
 };
 
 const calculateNextPaymentDate = (startDate, frequency, billingDay = null) => {
