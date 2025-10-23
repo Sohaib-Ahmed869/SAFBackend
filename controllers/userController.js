@@ -2,7 +2,7 @@
 const User = require("../models/user");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
-require('dotenv').config();
+require('dotenv').config({ override: true });
 const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -44,6 +44,62 @@ exports.register = async (req, res) => {
     await user.save();
 
     console.log("User SignUp", user);
+    
+    // Send welcome email
+    try {
+      const welcomeEmailBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
+          <div style="text-align: center; padding: 20px 0;">
+            <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+          </div>
+          
+          <h2 style="color: #4CAF50; text-align: center;">Welcome to Shahid Afridi Foundation!</h2>
+          
+          <p>Dear ${user.name},</p>
+          
+          <p>Thank you for registering with the Shahid Afridi Foundation. We're excited to have you join our community of supporters who are making a difference in the lives of those in need.</p>
+          
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>Your Account Details:</strong></p>
+            <p>Name: ${user.name}</p>
+            <p>Email: ${user.email}</p>
+            <p>Phone: ${user.phone}</p>
+            <p>Country: ${user.country}</p>
+          </div>
+          
+          <p>You can now:</p>
+          <ul>
+            <li>Make donations to support our causes</li>
+            <li>Track your donation history</li>
+            <li>Set up recurring donations</li>
+            <li>Receive updates about our impact</li>
+          </ul>
+          
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="https://shahidafridifoundation.org.au/login" 
+               style="background-color: #4CAF50; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              Login to Your Account
+            </a>
+          </div>
+          
+          <p>If you have any questions or need assistance, please don't hesitate to contact us at <a href="mailto:info@shahidafridifoundation.org.au">info@shahidafridifoundation.org.au</a> or call us at 1300 SAF AUS (1300 723 287).</p>
+          
+          <p>Thank you for your support!</p>
+          
+          <div style="text-align: center; padding: 20px 0; border-top: 1px solid #e0e0e0; margin-top: 30px;">
+            <p>Shahid Afridi Foundation Ltd | ABN: 97 642 657 010<br>
+            <a href="http://www.shahidafridifoundation.org.au/">www.shahidafridifoundation.org.au</a> | <a href="mailto:info@ShahidAfridiFoundation.org.au">info@ShahidAfridiFoundation.org.au</a> | 1300 SAF AUS (1300 723 287)</p>
+          </div>
+        </div>
+      `;
+      
+      await sendEmail(user.email, welcomeEmailBody, "Welcome to Shahid Afridi Foundation - Account Created");
+      console.log(`Welcome email sent to: ${user.email}`);
+    } catch (emailError) {
+      console.error("Failed to send welcome email:", emailError);
+      // Don't fail the registration if email fails
+    }
+    
     // Generate token
     const token = generateToken(user._id);
     // Send response

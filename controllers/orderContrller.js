@@ -1686,6 +1686,11 @@ exports.getOrderStats = async (req, res) => {
           : 0,
     };
 
+    // Add yearly stats if requested
+    if (req.query.yearly === 'true') {
+      stats.yearlyStats = await getYearlyStats(validOrders, goFundMeDonations, stripe);
+    }
+
     res.json({
       status: "Success",
       stats,
@@ -1753,6 +1758,161 @@ const calculateRecurringTotalAmount = (order) => {
   }
 
   return totalPayments * amount;
+};
+
+const getYearlyStats = async (orders, goFundMeDonations, stripe) => {
+  // Collect per-month totals for the current year
+  const monthlyData = {}; // { 'YYYY-MM': { total, count } }
+  const currentYear = new Date().getFullYear();
+
+  // Process regular orders
+  for (const order of orders) {
+    const initialDate = new Date(order.createdAt);
+    const initialYear = initialDate.getFullYear();
+    
+    if (initialYear !== currentYear) continue; // Only process current year
+
+    const monthKey = `${initialYear}-${String(initialDate.getMonth() + 1).padStart(2, "0")}`;
+
+    // For one-time payments, add the full amount to the creation month
+    if (order.paymentType === "single") {
+      if (!monthlyData[monthKey]) monthlyData[monthKey] = { total: 0, count: 0 };
+      monthlyData[monthKey].total += order.totalAmount;
+      monthlyData[monthKey].count += 1;
+    }
+    // For recurring/installments, process payment history
+    else {
+      // Handle recurring payments by fetching Stripe data if possible
+      if (
+        order.paymentType === "recurring" &&
+        order.transactionDetails?.stripeSubscriptionId &&
+        (order.paymentMethod === "visa" || order.paymentMethod === "mastercard")
+      ) {
+        try {
+          // Get all paid invoices for this subscription
+          const invoices = await stripe.invoices.list({
+            subscription: order.transactionDetails.stripeSubscriptionId,
+            status: "paid",
+            limit: 100,
+          });
+
+          // Process each invoice
+          for (const invoice of invoices.data) {
+            const paymentDate = new Date(invoice.status_transitions.paid_at * 1000);
+            const paymentYear = paymentDate.getFullYear();
+            
+            if (paymentYear === currentYear) {
+              const paymentMonthKey = `${paymentYear}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}`;
+              if (!monthlyData[paymentMonthKey]) monthlyData[paymentMonthKey] = { total: 0, count: 0 };
+              monthlyData[paymentMonthKey].total += invoice.amount_paid / 100; // Convert from cents
+              monthlyData[paymentMonthKey].count += 1;
+            }
+          }
+        } catch (stripeError) {
+          console.error("Error fetching Stripe invoice data:", stripeError);
+          // Fall back to local data
+          if (order.recurringDetails && order.recurringDetails.paymentHistory) {
+            order.recurringDetails.paymentHistory
+              .filter((p) => p.status === "succeeded")
+              .forEach((payment) => {
+                const paymentDate = payment.date ? new Date(payment.date) : initialDate;
+                const paymentYear = paymentDate.getFullYear();
+                
+                if (paymentYear === currentYear) {
+                  const paymentMonthKey = `${paymentYear}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}`;
+                  if (!monthlyData[paymentMonthKey]) monthlyData[paymentMonthKey] = { total: 0, count: 0 };
+                  monthlyData[paymentMonthKey].total += payment.amount;
+                  monthlyData[paymentMonthKey].count += 1;
+                }
+              });
+          }
+        }
+      }
+      // Handle installment payments
+      else if (order.paymentType === "installments" && order.installmentDetails) {
+        if (order.installmentDetails.installmentHistory && order.installmentDetails.installmentHistory.length > 0) {
+          order.installmentDetails.installmentHistory
+            .filter((h) => h.status === "completed")
+            .forEach((installment) => {
+              const paymentDate = installment.date ? new Date(installment.date) : initialDate;
+              const paymentYear = paymentDate.getFullYear();
+              
+              if (paymentYear === currentYear) {
+                const paymentMonthKey = `${paymentYear}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}`;
+                if (!monthlyData[paymentMonthKey]) monthlyData[paymentMonthKey] = { total: 0, count: 0 };
+                monthlyData[paymentMonthKey].total += installment.amount;
+                monthlyData[paymentMonthKey].count += 1;
+              }
+            });
+        } else {
+          // If no history, add first installment to creation month
+          if (initialYear === currentYear) {
+            if (!monthlyData[monthKey]) monthlyData[monthKey] = { total: 0, count: 0 };
+            monthlyData[monthKey].total += order.installmentDetails.installmentAmount;
+            monthlyData[monthKey].count += 1;
+          }
+        }
+      }
+      // Fall back for recurring payments without Stripe ID
+      else if (order.paymentType === "recurring" && order.recurringDetails) {
+        if (order.recurringDetails.paymentHistory && order.recurringDetails.paymentHistory.length > 0) {
+          order.recurringDetails.paymentHistory
+            .filter((p) => p.status === "succeeded")
+            .forEach((payment) => {
+              const paymentDate = payment.date ? new Date(payment.date) : initialDate;
+              const paymentYear = paymentDate.getFullYear();
+              
+              if (paymentYear === currentYear) {
+                const paymentMonthKey = `${paymentYear}-${String(paymentDate.getMonth() + 1).padStart(2, "0")}`;
+                if (!monthlyData[paymentMonthKey]) monthlyData[paymentMonthKey] = { total: 0, count: 0 };
+                monthlyData[paymentMonthKey].total += payment.amount;
+                monthlyData[paymentMonthKey].count += 1;
+              }
+            });
+        } else {
+          // If no payment history, add first payment to creation month
+          if (initialYear === currentYear) {
+            if (!monthlyData[monthKey]) monthlyData[monthKey] = { total: 0, count: 0 };
+            monthlyData[monthKey].total += order.recurringDetails.amount;
+            monthlyData[monthKey].count += 1;
+          }
+        }
+      }
+    }
+  }
+
+  // Process GoFundMe donations
+  for (const donation of goFundMeDonations) {
+    const donationDate = new Date(donation.createdAt);
+    const donationYear = donationDate.getFullYear();
+    
+    if (donationYear === currentYear) {
+      const monthKey = `${donationYear}-${String(donationDate.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthlyData[monthKey]) monthlyData[monthKey] = { total: 0, count: 0 };
+      monthlyData[monthKey].total += donation.amount;
+      monthlyData[monthKey].count += 1;
+    }
+  }
+
+  // Convert to array format with month names
+  const monthNames = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+
+  const monthlyArray = [];
+  for (let month = 1; month <= 12; month++) {
+    const monthKey = `${currentYear}-${String(month).padStart(2, "0")}`;
+    const data = monthlyData[monthKey] || { total: 0, count: 0 };
+    
+    monthlyArray.push({
+      month: monthNames[month - 1],
+      amount: Number(data.total.toFixed(2)),
+      count: data.count
+    });
+  }
+
+  return monthlyArray;
 };
 
 const getMonthlyStats = async (orders, stripe, requestedMonth) => {

@@ -94,7 +94,15 @@ const initializeEmailSystem = async () => {
 };
 
 // Initialize on module load
-initializeEmailSystem();
+let emailSystemInitialized = false;
+
+const initializeEmailSystemAsync = async () => {
+  await initializeEmailSystem();
+  emailSystemInitialized = true;
+};
+
+// Start initialization
+initializeEmailSystemAsync();
 
 // Utility function to send an email
 const sendEmail = async (
@@ -104,7 +112,13 @@ const sendEmail = async (
   attachments = []
 ) => {
   try {
-  
+    // Wait for email system to be initialized
+    let attempts = 0;
+    while (!emailSystemInitialized && attempts < 10) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      attempts++;
+    }
+
     if (!activeTransporter) {
       console.error("No email transporter available");
       return { success: false, message: "Email system not configured", error: "No transporter available" };
