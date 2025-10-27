@@ -3358,3 +3358,180 @@ exports.processPayment = async (req, res) => {
     });
   }
 };
+
+// @desc    Get yearly donation statistics
+// @route   GET /api/orders/yearly-stats
+// @access  Private
+exports.getYearlyStats = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    // Parse query parameters
+    const { year, paymentType, paymentStatus } = req.query;
+    // If no year specified, don't filter by year (show all data)
+    const targetYear = year ? parseInt(year) : null;
+
+
+    // Get all orders for the user
+    const orders = await Order.find({ user: userId });
+
+    // Get all GoFundMe donations for the user
+    const goFundMeDonations = await GoFundMeDonation.find({
+      donorEmail: userEmail,
+      paymentStatus: { $in: ["completed", "pending"] }
+    });
+
+    // Filter out failed orders
+    const validOrders = orders.filter(
+      (order) => order.paymentStatus !== "failed"
+    );
+
+    // Filter by year and payment type
+    const filteredOrders = validOrders.filter((order) => {
+      // If targetYear is specified, filter by year
+      if (targetYear !== null) {
+        const orderYear = new Date(order.createdAt).getFullYear();
+        if (orderYear !== targetYear) return false;
+      }
+      
+      if (paymentType && paymentType !== 'all') {
+        if (paymentType === 'p2p') return false; // Regular orders are never P2P
+        if (order.paymentType !== paymentType) return false;
+      }
+      
+      if (paymentStatus && paymentStatus !== 'all') {
+        if (order.paymentStatus !== paymentStatus) return false;
+      }
+      
+      return true;
+    });
+
+    // Filter GoFundMe donations by year
+    const filteredGoFundMeDonations = goFundMeDonations.filter((donation) => {
+      // If targetYear is specified, filter by year
+      if (targetYear !== null) {
+        const donationYear = new Date(donation.createdAt).getFullYear();
+        if (donationYear !== targetYear) return false;
+      }
+      
+      if (paymentType && paymentType !== 'all' && paymentType !== 'p2p') {
+        return false; // If filtering for non-P2P type, exclude P2P donations
+      }
+      
+      if (paymentType === 'p2p') {
+        // Only include P2P donations
+        if (paymentStatus && paymentStatus !== 'all' && donation.paymentStatus !== paymentStatus) {
+          return false;
+        }
+      } else if (paymentType && paymentType !== 'p2p') {
+        return false; // If filtering for specific type (not P2P), exclude P2P donations
+      }
+      
+      return true;
+    });
+
+    // Combine data for processing
+    const allTransactions = [
+      ...filteredOrders.map(order => ({
+        type: 'order',
+        createdAt: order.createdAt,
+        paymentType: order.paymentType,
+        paymentStatus: order.paymentStatus,
+        amount: order.totalAmount,
+        order
+      })),
+      ...filteredGoFundMeDonations.map(donation => ({
+        type: 'gofundme',
+        createdAt: donation.createdAt,
+        paymentType: 'p2p',
+        paymentStatus: donation.paymentStatus,
+        amount: donation.amount,
+        donation
+      }))
+    ];
+
+    // Group by month
+    const monthNames = [
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"
+    ];
+
+    const monthlyData = {};
+
+    // If specific year is requested, pre-populate months for that year
+    if (targetYear !== null) {
+      for (let month = 1; month <= 12; month++) {
+        const monthKey = `${targetYear}-${String(month).padStart(2, "0")}`;
+        const monthName = monthNames[month - 1];
+        const displayMonth = `${monthName.substring(0, 3)} ${targetYear}`;
+        
+        monthlyData[monthKey] = {
+          month: displayMonth,
+          monthKey,
+          amount: 0,
+          count: 0
+        };
+      }
+    }
+
+    // Process transactions and assign to months
+    for (const transaction of allTransactions) {
+      const date = new Date(transaction.createdAt);
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+      
+      // If month doesn't exist in monthlyData, create it
+      if (!monthlyData[monthKey]) {
+        const monthName = monthNames[month - 1];
+        const displayMonth = `${monthName.substring(0, 3)} ${year}`;
+        
+        monthlyData[monthKey] = {
+          month: displayMonth,
+          monthKey,
+          amount: 0,
+          count: 0
+        };
+      }
+      
+      monthlyData[monthKey].amount += transaction.amount;
+      monthlyData[monthKey].count += 1;
+    }
+
+    // Convert to array and sort by monthKey
+    const monthlyStats = Object.values(monthlyData).sort((a, b) => 
+      a.monthKey.localeCompare(b.monthKey)
+    );
+
+    // Calculate summary statistics
+    const totalAmount = monthlyStats.reduce((sum, month) => sum + month.amount, 0);
+    const totalCount = monthlyStats.reduce((sum, month) => sum + month.count, 0);
+    const averageDonation = totalCount > 0 ? totalAmount / totalCount : 0;
+
+    const yearlySummary = {
+      totalAmount: Number(totalAmount.toFixed(2)),
+      totalCount,
+      averageDonation: Number(averageDonation.toFixed(2))
+    };
+
+    res.json({
+      status: "Success",
+      yearlySummary,
+      monthlyStats: monthlyStats.map(month => ({
+        month: month.month,
+        monthKey: month.monthKey,
+        amount: Number(month.amount.toFixed(2)),
+        count: month.count
+      }))
+    });
+  } catch (error) {
+    console.error("Error getting yearly stats:", error);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to get yearly statistics",
+      error: error.message,
+    });
+  }
+};

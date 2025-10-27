@@ -22,6 +22,7 @@ router.delete("/donation/:donationId/receipt", orderController.deleteReceipt);
 // Protected routes (authentication required)
 router.get("/my-orders", auth, orderController.getOrders);
 router.get("/stats", auth, orderController.getOrderStats);
+router.get("/yearly-stats", auth, orderController.getYearlyStats);
 router.get("/available-years", auth, orderController.getAvailableFinancialYears);
 router.get("/statement", auth, orderController.generateStatement);
 router.get("/statement/pdf", auth, orderController.downloadStatementPDF);
