@@ -58,7 +58,7 @@ const OrderSchema = new Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ["visa", "mastercard", "bank", "card", "paypal"],
+      enum: ["visa", "mastercard", "bank", "eftpos", "card", "paypal"],
       required: true,
     }    
     ,

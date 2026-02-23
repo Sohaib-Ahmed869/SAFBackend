@@ -36,6 +36,47 @@ const app = express();
 const Order = require("./models/order");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
+// Determine allowed origins
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "https://shahidafridifoundation.org.au",
+  "https://www.shahidafridifoundation.org.au",
+  "https://backend.shahidafridifoundation.org.au",
+];
+
+const envOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
+  : [];
+
+const allowedOrigins = Array.from(
+  new Set([...defaultOrigins, ...envOrigins].filter(Boolean))
+);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests or same-origin
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn(`CORS blocked origin: ${origin}`);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "Accept",
+    "X-Requested-With",
+  ],
+  exposedHeaders: ["Content-Range", "X-Content-Range"],
+};
+
+// Trust reverse proxy (required for secure cookies behind load balancers)
+app.set("trust proxy", 1);
+
 // Connect to database
 connectDB();
 setupInstallmentProcessingJob();
@@ -43,20 +84,14 @@ scheduleSubscriptionChecks();
 // Middleware
 // app.use(cors({ origin: '*' }));
 
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "https://shahidafridifoundation.org.au",
-      "https://www.shahidafridifoundation.org.au",
-      "http://localhost:5174",
-    ],
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-    exposedHeaders: ["Content-Range", "X-Content-Range"],
-  })
-);
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// Ensure credentials header is always sent
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Credentials", "true");
+  next();
+});
 app.use("/api/gofundme/webhook", express.raw({ type: "application/json" }));
 app.use("/api/subscriptions/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());

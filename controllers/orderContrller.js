@@ -230,7 +230,7 @@ const calculateBillingAnchor = (billingDay) => {
   return Math.floor(billingDate.getTime() / 1000);
 };
 
-const sendBankTransferPendingEmail = async (order) => {
+const sendBankTransferPendingEmail = async (order, paymentMethod = "bank") => {
   try {
     // Get user from the order
     const user = await User.findById(order.user);
@@ -239,8 +239,10 @@ const sendBankTransferPendingEmail = async (order) => {
       return;
     }
 
+    const methodLabel = paymentMethod === "eftpos" ? "EFTPOS" : "Bank Transfer";
+
     console.log(
-      "Attempting to send bank transfer pending email to:",
+      "Attempting to send pending payment email to:",
       user.email
     );
 
@@ -250,7 +252,7 @@ const sendBankTransferPendingEmail = async (order) => {
           <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
         </div>
         
-        <h2 style="color: #4a7c59;">Bank Transfer Donation Pending</h2>
+        <h2 style="color: #4a7c59;">${methodLabel} Donation Pending</h2>
         
         <p>Dear ${user.name},</p>
         
@@ -284,7 +286,7 @@ const sendBankTransferPendingEmail = async (order) => {
     const result = await sendEmail(
       user.email,
       emailBody,
-      "Bank Transfer Donation Pending - Shahid Afridi Foundation"
+      `${methodLabel} Donation Pending - Shahid Afridi Foundation`
     );
 
     if (!result.success) {
@@ -294,17 +296,17 @@ const sendBankTransferPendingEmail = async (order) => {
       );
       console.error("Email details:", {
         to: user.email,
-        subject: "Bank Transfer Donation Pending - Shahid Afridi Foundation",
+        subject: `${methodLabel} Donation Pending - Shahid Afridi Foundation`,
         donationId: order.donationId,
       });
     } else {
       console.log(
-        "Bank transfer pending email sent successfully to:",
+        "Pending payment email sent successfully to:",
         user.email
       );
     }
   } catch (error) {
-    console.error("Error sending bank transfer pending email:", error);
+    console.error("Error sending pending payment email:", error);
     console.error("Error details:", {
       message: error.message,
       stack: error.stack,
@@ -625,7 +627,7 @@ exports.createOrder = async (req, res) => {
       donationType: req.body.donationType,
       paymentMethod,
       paymentStatus:
-        paymentMethod === "bank"
+        paymentMethod === "bank" || paymentMethod === "eftpos"
           ? "pending"
           : paymentMethod === "paypal" && paymentType === "single"
           ? "completed"
@@ -1189,11 +1191,11 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    if (paymentMethod === "bank") {
+    if (paymentMethod === "bank" || paymentMethod === "eftpos") {
       try {
-        await sendBankTransferPendingEmail(savedOrder);
+        await sendBankTransferPendingEmail(savedOrder, paymentMethod);
         console.log(
-          `Bank transfer pending email sent for order: ${savedOrder.donationId}`
+          `Pending payment email sent for order: ${savedOrder.donationId}`
         );
       } catch (emailError) {
         console.error(
