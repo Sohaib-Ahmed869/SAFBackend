@@ -5,13 +5,19 @@ const {
   getDonationTypes,
   getDonationTypeById,
   updateDonationType,
-  deleteDonationType
+  deleteDonationType,
+  reorderDonationTypes
 } = require('../controllers/donationtypecontroller');
 
 // @route   POST /api/donation-types
 // @desc    Create a new donation type
 // @access  Public
 router.post('/', createDonationType);
+
+// @route   POST /api/donation-types/reorder
+// @desc    Reorder donation types
+// @access  Public
+router.post('/reorder', reorderDonationTypes);
 
 // @route   GET /api/donation-types
 // @desc    Get all donation types

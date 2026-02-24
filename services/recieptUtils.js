@@ -515,10 +515,16 @@ const getTableData = (order, installmentNumber, paidOnly) => {
     // Fallback to items if no installment history
     else if (order.items && order.items.length > 0) {
       order.items.forEach((item) => {
+        let typeInfo = '';
+        if (item.zakatEligible) {
+          typeInfo = ' (Zakat)';
+        } else if (item.sadaqahEligible) {
+          typeInfo = ' (Sadaqah)';
+        }
         tableData.push({
           donation_date: donationDate,
-          description: `${item.title}${
-            item.onBehalfOf ? ` (on behalf of ${item.onBehalfOf})` : ""
+          description: `${item.title}${typeInfo}${
+            item.onBehalfOf ? ` - on behalf of ${item.onBehalfOf}` : ""
           }`,
           amount: `$${(item.price * (item.quantity || 1)).toFixed(2)}`,
         });
@@ -529,10 +535,16 @@ const getTableData = (order, installmentNumber, paidOnly) => {
   else {
     if (order.items && order.items.length > 0) {
       order.items.forEach((item) => {
+        let typeInfo = '';
+        if (item.zakatEligible) {
+          typeInfo = ' (Zakat)';
+        } else if (item.sadaqahEligible) {
+          typeInfo = ' (Sadaqah)';
+        }
         tableData.push({
           donation_date: donationDate,
-          description: `${item.title}${
-            item.onBehalfOf ? ` (on behalf of ${item.onBehalfOf})` : ""
+          description: `${item.title}${typeInfo}${
+            item.onBehalfOf ? ` - on behalf of ${item.onBehalfOf}` : ""
           }`,
           amount: `$${(item.price * (item.quantity || 1)).toFixed(2)}`,
         });
@@ -889,6 +901,7 @@ const formatPaymentMethod = (method) => {
   const methods = {
     card: "Credit/Debit Card",
     bank: "Bank Transfer",
+    eftpos: "EFTPOS",
     paypal: "PayPal",
     visa: "Visa",
     mastercard: "Mastercard",
@@ -1063,7 +1076,8 @@ const createEmailBody = (order, totalAmount, installmentNumber) => {
       <p>Your official tax-deductible receipt is attached to this email. Please keep it for your tax records.</p>
       
       ${
-        order.paymentMethod === "bank" ? getBankTransferInstructions(order) : ""
+        order.paymentMethod === "bank" ? getBankTransferInstructions(order) : 
+        order.paymentMethod === "eftpos" ? getEFTPOSInstructions(order) : ""
       }
       
       <p>If you have any questions or need further assistance, please don't hesitate to contact us at <a href="mailto:info@ShahidAfridiFoundation.org.au">info@ShahidAfridiFoundation.org.au</a> or call us at 1300 SAF AUS (1300 723 287).</p>
@@ -1096,6 +1110,23 @@ const getBankTransferInstructions = (order) => {
         <li><strong>Reference:</strong> ${order.donationId} (Important: Please include this reference)</li>
       </ul>
       <p><strong>Note:</strong> Your donation will be marked as completed once we receive your payment.</p>
+    </div>
+  `;
+};
+
+/**
+ * Gets EFTPOS instructions for email body
+ * @param {Object} order - The order object
+ * @returns {string} - HTML string with EFTPOS instructions
+ */
+const getEFTPOSInstructions = (order) => {
+  return `
+    <div style="background-color: #fffaed; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ffc107;">
+      <h3 style="margin-top: 0; color: #856404;">EFTPOS Payment Instructions:</h3>
+      <p>Please upload your EFTPOS receipt so our team can confirm your payment.</p>
+      <p>You can upload the receipt by logging into your account and visiting the "My Donations" page, or email it to us at <a href="mailto:info@ShahidAfridiFoundation.org.au">info@ShahidAfridiFoundation.org.au</a></p>
+      <p><strong>Reference:</strong> ${order.donationId} (Please include this in your email subject if sending via email)</p>
+      <p><strong>Note:</strong> Your donation will be marked as completed once we receive and verify your payment proof.</p>
     </div>
   `;
 };

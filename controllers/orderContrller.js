@@ -557,6 +557,8 @@ exports.createOrder = async (req, res) => {
       price: item.price,
       quantity: item.quantity || 1,
       onBehalfOf: item.onBehalfOf || null,
+      zakatEligible: item.zakatEligible || false,
+      sadaqahEligible: item.sadaqahEligible || false,
     }));
 
     // Capture the current day for recurring billing

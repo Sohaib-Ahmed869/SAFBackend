@@ -7,6 +7,10 @@ const donationTypeSchema = new mongoose.Schema({
     trim: true,
     maxLength: [100, 'Donation type cannot exceed 100 characters'],
     unique: true
+  },
+  sortOrder: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true

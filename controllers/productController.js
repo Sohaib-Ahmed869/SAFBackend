@@ -6,7 +6,7 @@ const { s3Client, deleteS3Object } = require('../config/s3');
 // @access  Private/Admin
 exports.createProduct = async (req, res) => {
     try {
-        const { title, description, price, category } = req.body;
+        const { title, description, price, category, zakatEligible, sadaqahEligible } = req.body;
         
         // Validate required fields
         if (!title || !description || !price || !category) {
@@ -32,7 +32,9 @@ exports.createProduct = async (req, res) => {
             price,
             category,
             image: imageUrl,  // Store full S3 URL
-            imagePath: imagePath  // Store S3 key for future reference
+            imagePath: imagePath,  // Store S3 key for future reference
+            zakatEligible: zakatEligible === 'true' || zakatEligible === true,
+            sadaqahEligible: sadaqahEligible === 'true' || sadaqahEligible === true
         });
 
         const savedProduct = await product.save();
@@ -99,8 +101,15 @@ exports.getProductById = async (req, res) => {
 // @access  Private/Admin
 exports.updateProduct = async (req, res) => {
     try {
-        const { title, description, price, category } = req.body;
-        const updateData = { title, description, price, category };
+        const { title, description, price, category, zakatEligible, sadaqahEligible } = req.body;
+        const updateData = { 
+            title, 
+            description, 
+            price, 
+            category,
+            zakatEligible: zakatEligible === 'true' || zakatEligible === true,
+            sadaqahEligible: sadaqahEligible === 'true' || sadaqahEligible === true
+        };
         
         // Find the existing product
         const existingProduct = await Product.findById(req.params.id);

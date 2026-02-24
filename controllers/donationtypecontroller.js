@@ -5,8 +5,13 @@ const createDonationType = async (req, res) => {
   try {
     const { donationType } = req.body;
     
+    // Get the highest sortOrder value and add 1
+    const maxOrder = await DonationType.findOne().sort({ sortOrder: -1 });
+    const sortOrder = maxOrder ? maxOrder.sortOrder + 1 : 0;
+    
     const newDonationType = new DonationType({
-      donationType
+      donationType,
+      sortOrder
     });
     
     const savedDonationType = await newDonationType.save();
@@ -34,7 +39,7 @@ const createDonationType = async (req, res) => {
 // Get all donation types
 const getDonationTypes = async (req, res) => {
   try {
-    const donationTypes = await DonationType.find().sort({ createdAt: -1 });
+    const donationTypes = await DonationType.find().sort({ sortOrder: 1 });
     
     res.status(200).json({
       success: true,
@@ -135,10 +140,46 @@ const deleteDonationType = async (req, res) => {
   }
 };
 
+// Reorder donation types
+const reorderDonationTypes = async (req, res) => {
+  try {
+    const { orderedIds } = req.body; // Array of IDs in new order
+    
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderedIds must be an array'
+      });
+    }
+    
+    // Update sortOrder for each donation type
+    const updatePromises = orderedIds.map((id, index) => 
+      DonationType.findByIdAndUpdate(id, { sortOrder: index })
+    );
+    
+    await Promise.all(updatePromises);
+    
+    // Get updated list
+    const donationTypes = await DonationType.find().sort({ sortOrder: 1 });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Donation types reordered successfully',
+      data: donationTypes
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
 module.exports = {
   createDonationType,
   getDonationTypes,
   getDonationTypeById,
   updateDonationType,
-  deleteDonationType
+  deleteDonationType,
+  reorderDonationTypes
 };
