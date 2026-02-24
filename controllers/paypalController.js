@@ -104,6 +104,8 @@ exports.captureOrder = async (req, res) => {
     );
 
     console.log('PayPal order captured:', response.data);
+    
+    // Return the full response data
     res.json(response.data);
   } catch (error) {
     console.error('Error capturing PayPal order:', error.response?.data || error.message);
@@ -389,6 +391,17 @@ exports.confirmSubscription = async (req, res) => {
         console.log('Updated existing order');
       }
       
+      // Send receipt email for active subscriptions
+      if (sub.status === 'ACTIVE') {
+        try {
+          const { sendReceiptEmail } = require('../services/recieptUtils');
+          await sendReceiptEmail(order);
+          console.log('Receipt email sent for PayPal subscription:', subscriptionId);
+        } catch (emailError) {
+          console.error('Failed to send receipt email for subscription:', emailError);
+        }
+      }
+      
       // Prepare response
       const responseData = { 
         success: true,
@@ -532,6 +545,15 @@ const handleSubscriptionActivated = async (event) => {
     };
     await order.save();
     console.log('Order updated for activated subscription:', order.donationId);
+    
+    // Send receipt email when subscription is activated
+    try {
+      const { sendReceiptEmail } = require('../services/recieptUtils');
+      await sendReceiptEmail(order);
+      console.log('Receipt email sent for activated subscription:', subscription.id);
+    } catch (emailError) {
+      console.error('Failed to send receipt email for subscription activation:', emailError);
+    }
   }
 };
 
@@ -590,6 +612,15 @@ const handleSubscriptionPaymentCompleted = async (event) => {
     
     await order.save();
     console.log('Order updated for payment:', order.donationId);
+    
+    // Send receipt email for successful payment
+    try {
+      const { sendReceiptEmail } = require('../services/recieptUtils');
+      await sendReceiptEmail(order);
+      console.log('Receipt email sent for PayPal payment:', payment.id);
+    } catch (emailError) {
+      console.error('Failed to send receipt email for payment webhook:', emailError);
+    }
   }
 };
 

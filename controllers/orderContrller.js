@@ -1207,6 +1207,21 @@ exports.createOrder = async (req, res) => {
       }
     }
 
+    // Send receipt email for PayPal single payments
+    if (paymentMethod === "paypal" && paymentType === "single") {
+      try {
+        await sendReceiptEmail(savedOrder);
+        console.log(
+          `Receipt email sent for PayPal order: ${savedOrder.donationId}`
+        );
+      } catch (emailError) {
+        console.error(
+          "Failed to send PayPal receipt email:",
+          emailError
+        );
+      }
+    }
+
     res.status(201).json({
       status: "Success",
       message: "Order created successfully",
