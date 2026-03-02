@@ -23,6 +23,10 @@ const OrderSchema = new Schema(
           default: 1,
         },
         onBehalfOf: String,
+        donationType: {
+          type: String,
+          default: "Sadaqah",
+        },
         zakatEligible: {
           type: Boolean,
           default: false,

@@ -777,7 +777,6 @@ exports.getDonations = async (req, res) => {
         date: donation.createdAt,
         type: donation.paymentType || "single",
         status: donation.paymentStatus || "pending",
-        donationType: "regular", // Flag to identify regular orders
         nextPaymentDate:
           donation.recurringDetails?.nextPaymentDate ||
           donation.installmentDetails?.nextInstallmentDate ||
@@ -1050,7 +1049,6 @@ exports.getDonationById = async (req, res) => {
       // Format regular order donation
       const formattedDonation = {
         ...donation,
-        donationType: "regular",
         donor: donation.donorDetails?.name || "Anonymous",
         email: donation.donorDetails?.email || "",
         amount: donation.totalAmount || 0,
@@ -1431,6 +1429,85 @@ const sendEFTPOSCancellationEmail = async (donation) => {
   }
 };
 
+/**
+ * Send cancellation email for donations with any payment method (card, paypal, etc.).
+ * Uses donorDetails.email when donation.user is not set (e.g. guest donors).
+ */
+const sendDonationCancellationEmail = async (donation) => {
+  try {
+    let email = null;
+    let name = "Donor";
+
+    if (donation.user) {
+      const user = await User.findById(donation.user);
+      if (user) {
+        email = user.email;
+        name = user.name || name;
+      }
+    }
+    if (!email && donation.donorDetails?.email) {
+      email = donation.donorDetails.email;
+      name = donation.donorDetails.name || name;
+    }
+
+    if (!email) {
+      console.error("Missing email for donation cancellation:", donation.donationId);
+      return;
+    }
+
+    console.log("Attempting to send donation cancellation email to:", email);
+
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="text-align: center; padding: 20px 0;">
+          <img src="https://safimages.s3.ap-southeast-2.amazonaws.com/events/Screenshot+2025-02-27+014744.png" alt="Shahid Afridi Foundation" style="max-width: 150px;">
+        </div>
+        
+        <h2 style="color: #dc2626;">Donation Cancelled</h2>
+        
+        <p>Dear ${name},</p>
+        
+        <p>We regret to inform you that your donation has been cancelled.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Donation Details:</h3>
+          <p><strong>Donation ID:</strong> ${donation.donationId}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
+        </div>
+
+        <p>If you believe this is an error, please contact us at info@ShahidAfridiFoundation.org.au</p>
+        
+        <p>Thank you for your interest in supporting our cause.</p>
+      </div>
+    `;
+
+    const result = await sendEmail(
+      email,
+      emailBody,
+      "Donation Cancelled - Shahid Afridi Foundation"
+    );
+
+    if (!result.success) {
+      console.error("Failed to send donation cancellation email:", result.error);
+      console.error("Email details:", {
+        to: email,
+        subject: "Donation Cancelled - Shahid Afridi Foundation",
+        donationId: donation.donationId
+      });
+    } else {
+      console.log("Donation cancellation email sent successfully to:", email);
+    }
+  } catch (error) {
+    console.error("Error sending donation cancellation email:", error);
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+      donationId: donation.donationId
+    });
+  }
+};
+
 // Update donation status
 exports.updateDonationStatus = async (req, res) => {
   try {
@@ -1486,27 +1563,31 @@ exports.updateDonationStatus = async (req, res) => {
 
     await donation.save();
 
-    // Send appropriate email notifications for bank transfer and EFTPOS donations
-    if (donation.paymentMethod === "bank" || donation.paymentMethod === "eftpos") {
-      try {
+    // Send email notifications for status changes
+    try {
+      if (donation.paymentMethod === "bank" || donation.paymentMethod === "eftpos") {
         if (paymentStatus === "completed" && oldStatus !== "completed") {
-          // Send approval email based on payment method
           if (donation.paymentMethod === "bank") {
             await sendBankTransferApprovalEmail(donation);
           } else if (donation.paymentMethod === "eftpos") {
             await sendEFTPOSApprovalEmail(donation);
           }
         } else if (paymentStatus === "cancelled" && oldStatus !== "cancelled") {
-          // Send cancellation email based on payment method
           if (donation.paymentMethod === "bank") {
             await sendBankTransferCancellationEmail(donation);
           } else if (donation.paymentMethod === "eftpos") {
             await sendEFTPOSCancellationEmail(donation);
           }
         }
-      } catch (emailError) {
-        console.error("Failed to send status update email:", emailError);
       }
+      // Send cancellation email for all other payment methods (card, paypal, visa, mastercard, etc.)
+      if (paymentStatus === "cancelled" && oldStatus !== "cancelled") {
+        if (donation.paymentMethod !== "bank" && donation.paymentMethod !== "eftpos") {
+          await sendDonationCancellationEmail(donation);
+        }
+      }
+    } catch (emailError) {
+      console.error("Failed to send status update email:", emailError);
     }
 
     res.json({

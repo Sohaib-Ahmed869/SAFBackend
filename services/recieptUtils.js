@@ -98,6 +98,16 @@ const generateReceiptPDF = async (
         doc.text(`Phone: ${order.donorDetails.phone}`);
       }
 
+      // Donation type(s): from items if present, else order-level
+      const pdfItemTypes = order.items?.length
+        ? [...new Set(order.items.map((i) => i.donationType).filter(Boolean))]
+        : [];
+      const pdfDonationType =
+        pdfItemTypes.length > 0
+          ? pdfItemTypes.join(", ")
+          : order.donationTypeName || order.donationType || "Sadaqah";
+      doc.text(`Donation Type: ${pdfDonationType}`);
+
       // Add donation table
       doc.moveDown(2);
 
@@ -1040,6 +1050,15 @@ const createEmailBody = (order, totalAmount, installmentNumber) => {
     amountDescription = "Donation Amount";
   }
 
+  // Donation type(s): from items if present, else order-level
+  const itemTypes = order.items?.length
+    ? [...new Set(order.items.map((i) => i.donationType).filter(Boolean))]
+    : [];
+  const donationTypeDisplay =
+    itemTypes.length > 0
+      ? itemTypes.join(", ")
+      : order.donationTypeName || order.donationType || "Sadaqah";
+
   return `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
       <div style="text-align: center; padding: 20px 0;">
@@ -1057,6 +1076,7 @@ const createEmailBody = (order, totalAmount, installmentNumber) => {
       <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
         <h3 style="margin-top: 0;">Receipt Details:</h3>
         <p><strong>Donation ID:</strong> ${order.donationId}</p>
+        <p><strong>Donation Type:</strong> ${donationTypeDisplay}</p>
         <p><strong>Date:</strong> ${formatDate(order.createdAt)}</p>
         <p><strong>${amountDescription}:</strong> $${totalAmount.toFixed(
     2

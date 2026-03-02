@@ -551,12 +551,13 @@ exports.createOrder = async (req, res) => {
     }
     console.log("Donor Details2", donorDetails);
 
-    // Process items array
+    // Process items array (include per-item donationType for receipts and display)
     const processedItems = items.map((item) => ({
       title: item.title,
       price: item.price,
       quantity: item.quantity || 1,
       onBehalfOf: item.onBehalfOf || null,
+      donationType: item.donationType || "Sadaqah",
       zakatEligible: item.zakatEligible || false,
       sadaqahEligible: item.sadaqahEligible || false,
     }));
