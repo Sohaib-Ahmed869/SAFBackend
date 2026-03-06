@@ -525,12 +525,8 @@ const getTableData = (order, installmentNumber, paidOnly) => {
     // Fallback to items if no installment history
     else if (order.items && order.items.length > 0) {
       order.items.forEach((item) => {
-        let typeInfo = '';
-        if (item.zakatEligible) {
-          typeInfo = ' (Zakat)';
-        } else if (item.sadaqahEligible) {
-          typeInfo = ' (Sadaqah)';
-        }
+        const donationType = item.donationType || order.donationTypeName || order.donationType || 'Sadaqah';
+        const typeInfo = donationType ? ` [${donationType}]` : '';
         tableData.push({
           donation_date: donationDate,
           description: `${item.title}${typeInfo}${
@@ -545,12 +541,8 @@ const getTableData = (order, installmentNumber, paidOnly) => {
   else {
     if (order.items && order.items.length > 0) {
       order.items.forEach((item) => {
-        let typeInfo = '';
-        if (item.zakatEligible) {
-          typeInfo = ' (Zakat)';
-        } else if (item.sadaqahEligible) {
-          typeInfo = ' (Sadaqah)';
-        }
+        const donationType = item.donationType || order.donationTypeName || order.donationType || 'Sadaqah';
+        const typeInfo = donationType ? ` [${donationType}]` : '';
         tableData.push({
           donation_date: donationDate,
           description: `${item.title}${typeInfo}${

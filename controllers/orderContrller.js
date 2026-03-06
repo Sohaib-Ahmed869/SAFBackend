@@ -460,6 +460,8 @@ exports.createOrder = async (req, res) => {
       stripePaymentMethodId,
       updateUserDetails,
       donationType,
+      paypalDetails,
+      paypalPlanId,
     } = req.body;
 
     console.log("Received order data:", req.body);
@@ -586,6 +588,12 @@ exports.createOrder = async (req, res) => {
         totalPayments: 0,
         paymentHistory: [],
       };
+      
+      // Add PayPal subscription ID if PayPal is the payment method
+      if (paymentMethod === 'paypal' && paypalDetails?.subscriptionId) {
+        orderRecurringDetails.paypalSubscriptionId = paypalDetails.subscriptionId;
+        orderRecurringDetails.paypalPlanId = paypalPlanId || paypalDetails.planId;
+      }
     }
 
     // Build installment details only if paymentType is "installments"
@@ -642,6 +650,21 @@ exports.createOrder = async (req, res) => {
       installmentDetails:
         paymentType === "installments" ? orderInstallmentDetails : undefined,
     };
+    
+    // Add PayPal subscription ID to externalId and transactionDetails for webhook matching
+    if (paymentMethod === 'paypal' && paymentType === 'recurring' && paypalDetails?.subscriptionId) {
+      orderObj.externalId = paypalDetails.subscriptionId;
+      orderObj.transactionDetails = {
+        subscription_id: paypalDetails.subscriptionId,
+        plan_id: paypalPlanId || paypalDetails.planId,
+        status: paypalDetails.status || 'ACTIVE',
+      };
+    }
+    
+    // Add PayPal details for all PayPal payments
+    if (paymentMethod === 'paypal' && paypalDetails) {
+      orderObj.paypalDetails = paypalDetails;
+    }
 
     // Create the order using the conditionally built object
     const order = new Order(orderObj);
@@ -707,9 +730,76 @@ exports.createOrder = async (req, res) => {
       try {
         if (paymentType === "single") {
           // Process one-time payment
+          // First, ensure the payment method is attached to a customer
+          let customer;
+          try {
+            console.log(`🔍 Validating payment method for single payment: ${stripePaymentMethodId}`);
+            const paymentMethodObj = await stripe.paymentMethods.retrieve(
+              stripePaymentMethodId
+            );
+            console.log(`✅ Payment method ${stripePaymentMethodId} is valid`);
+            
+            if (paymentMethodObj.customer) {
+              console.log(
+                `Payment method ${stripePaymentMethodId} is already attached to customer ${paymentMethodObj.customer}`
+              );
+              customer = await stripe.customers.retrieve(
+                paymentMethodObj.customer
+              );
+              console.log(`Using existing customer ${customer.id}`);
+            } else {
+              // Create new customer and attach payment method
+              customer = await stripe.customers.create({
+                email: donorDetails.email,
+                name: donorDetails.name,
+                phone: donorDetails.phone,
+              });
+              console.log(`Created new customer ${customer.id}`);
+              
+              await stripe.paymentMethods.attach(stripePaymentMethodId, {
+                customer: customer.id,
+              });
+              console.log(
+                `Attached payment method ${stripePaymentMethodId} to customer ${customer.id}`
+              );
+            }
+          } catch (stripeError) {
+            console.error("Error handling payment method:", stripeError);
+            if (
+              stripeError.code === "payment_method_in_use" ||
+              stripeError.message.includes("already been attached")
+            ) {
+              try {
+                console.log("Handling 'already attached' error");
+                const paymentMethodObj = await stripe.paymentMethods.retrieve(
+                  stripePaymentMethodId
+                );
+                if (paymentMethodObj.customer) {
+                  customer = await stripe.customers.retrieve(
+                    paymentMethodObj.customer
+                  );
+                  console.log(
+                    `Using existing customer ${customer.id} that payment method is attached to`
+                  );
+                } else {
+                  throw new Error(
+                    "Payment method is reported as already attached but no customer found"
+                  );
+                }
+              } catch (secondError) {
+                console.error("Error in special handling:", secondError);
+                throw secondError;
+              }
+            } else {
+              throw stripeError;
+            }
+          }
+
           const paymentIntent = await stripe.paymentIntents.create({
             amount: Math.round(totalAmount * 100),
             currency: "aud",
+            customer: customer.id,
+            payment_method: stripePaymentMethodId,
             automatic_payment_methods: {
               enabled: true,
             },
@@ -721,6 +811,7 @@ exports.createOrder = async (req, res) => {
           });
 
           savedOrder.transactionDetails = {
+            stripeCustomerId: customer.id,
             stripePaymentIntentId: paymentIntent.id,
             stripeStatus: paymentIntent.status,
             clientSecret: paymentIntent.client_secret,
@@ -1262,8 +1353,13 @@ exports.getOrders = async (req, res) => {
   try {
     const userEmail = req.user.email;
     
-    // Get regular orders
-    const orders = await Order.find({ user: req.user._id })
+    // Get regular orders - fetch by user ID OR by matching email for anonymous donations
+    const orders = await Order.find({
+      $or: [
+        { user: req.user._id },  // Orders linked to this user account
+        { "donorDetails.email": userEmail }  // Orders where donor email matches (catches anonymous donations from logged-in user)
+      ]
+    })
       .sort({ createdAt: -1 })
       .select("-__v");
 
@@ -1432,8 +1528,13 @@ exports.getOrderStats = async (req, res) => {
 
     console.log("Getting order stats for user:", req.user);
 
-    // Get all orders for the user
-    const orders = await Order.find({ user: userId });
+    // Get all orders for the user - include both linked and anonymous donations by email
+    const orders = await Order.find({
+      $or: [
+        { user: userId },  // Orders linked to this user account
+        { "donorDetails.email": userEmail }  // Orders where donor email matches (catches anonymous donations from this user)
+      ]
+    });
 
     // Get all GoFundMe donations for the user
     const goFundMeDonations = await GoFundMeDonation.find({ 

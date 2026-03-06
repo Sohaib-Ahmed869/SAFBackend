@@ -1572,6 +1572,14 @@ exports.updateDonationStatus = async (req, res) => {
           } else if (donation.paymentMethod === "eftpos") {
             await sendEFTPOSApprovalEmail(donation);
           }
+          // Also send receipt email after approval
+          try {
+            const { sendReceiptEmail } = require("../../services/recieptUtils");
+            await sendReceiptEmail(donation);
+            console.log(`Receipt email sent for approved ${donation.paymentMethod} payment: ${donation.donationId}`);
+          } catch (receiptError) {
+            console.error("Failed to send receipt email after approval:", receiptError);
+          }
         } else if (paymentStatus === "cancelled" && oldStatus !== "cancelled") {
           if (donation.paymentMethod === "bank") {
             await sendBankTransferCancellationEmail(donation);

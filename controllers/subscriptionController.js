@@ -813,12 +813,34 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
       console.log(
         `Updated order ${orderId} for installment ${installmentNumber}`
       );
+      
+      // Send receipt email for completed installment
+      try {
+        const result = await sendReceiptEmail(order, installmentNumber);
+        console.log(
+          `📧 Sent receipt email for installment ${installmentNumber} of order ${order._id}:`,
+          result.message
+        );
+      } catch (emailError) {
+        console.error("❌ Failed to send installment receipt email:", emailError);
+      }
     }
     // Handle one-time payments
     else if (order.paymentType === "single") {
       order.paymentStatus = "completed";
       await order.save();
       console.log(`✅ Updated one-time order ${orderId} to completed status`);
+      
+      // Send receipt email for single payment
+      try {
+        const result = await sendReceiptEmail(order);
+        console.log(
+          `📧 Sent receipt email for single payment order ${order._id}:`,
+          result.message
+        );
+      } catch (emailError) {
+        console.error("❌ Failed to send receipt email:", emailError);
+      }
     }
     
     console.log(`🎉 Payment intent processing completed successfully`);

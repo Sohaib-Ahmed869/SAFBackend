@@ -340,6 +340,7 @@ exports.confirmSubscription = async (req, res) => {
             endDate: sub.billing_info?.final_payment_time ? new Date(sub.billing_info.final_payment_time) : null,
             status: sub.status === 'ACTIVE' ? 'active' : 'pending',
             nextPaymentDate: sub.billing_info?.next_billing_time ? new Date(sub.billing_info.next_billing_time) : null,
+            totalPayments: sub.billing_info?.last_payment ? 1 : 0,
             paymentHistory: sub.billing_info?.last_payment ? [{
               date: new Date(sub.billing_info.last_payment.time),
               amount: subscriptionAmount || 0,
@@ -533,7 +534,12 @@ const handleSubscriptionActivated = async (event) => {
   
   // Find order by PayPal subscription ID
   const order = await Order.findOne({ 
-    'paypalDetails.subscriptionId': subscription.id 
+    $or: [
+      { 'recurringDetails.paypalSubscriptionId': subscription.id },
+      { 'paypalDetails.subscriptionId': subscription.id },
+      { 'transactionDetails.subscription_id': subscription.id },
+      { externalId: subscription.id }
+    ]
   });
   
   if (order) {
@@ -561,10 +567,22 @@ const handleSubscriptionActivated = async (event) => {
 const handleSubscriptionPaymentCompleted = async (event) => {
   const payment = event.resource;
   console.log('Webhook payment resource:', JSON.stringify(payment, null, 2));
-  // Find order by PayPal subscription ID
+  console.log('Looking for order with billing_agreement_id:', payment.billing_agreement_id);
+  
+  // Find order by PayPal subscription ID - check multiple possible locations
   const order = await Order.findOne({ 
-    'paypalDetails.subscriptionId': payment.billing_agreement_id 
+    $or: [
+      { 'recurringDetails.paypalSubscriptionId': payment.billing_agreement_id },
+      { 'paypalDetails.subscriptionId': payment.billing_agreement_id },
+      { 'transactionDetails.subscription_id': payment.billing_agreement_id },
+      { externalId: payment.billing_agreement_id }
+    ]
   });
+  
+  console.log('Order found:', !!order);
+  if (order) {
+    console.log('Order ID:', order._id, 'Donation ID:', order.donationId);
+  }
   
   if (order) {
     if (order.paymentType === 'installments') {
@@ -593,14 +611,22 @@ const handleSubscriptionPaymentCompleted = async (event) => {
         order.installmentDetails.nextInstallmentDate = nextDate;
       }
     } else if (order.paymentType === 'recurring') {
-      // Add to payment history for recurring
-      if (!order.paymentHistory) order.paymentHistory = [];
-      order.paymentHistory.push({
-        paymentDate: new Date(),
-        amount: payment.amount.total,
+      // Add to payment history for recurring - update recurringDetails
+      if (!order.recurringDetails) order.recurringDetails = {};
+      if (!order.recurringDetails.paymentHistory) order.recurringDetails.paymentHistory = [];
+      
+      order.recurringDetails.paymentHistory.push({
+        date: new Date(),
+        amount: parseFloat(payment.amount.total),
         paypalPaymentId: payment.id,
-        status: 'completed'
+        status: 'succeeded'
       });
+      
+      // Update total payments count
+      order.recurringDetails.totalPayments = order.recurringDetails.paymentHistory.length;
+      
+      // Update last payment date
+      order.recurringDetails.lastPaymentDate = new Date();
     }
     
     order.paypalDetails = {
@@ -630,7 +656,12 @@ const handleSubscriptionPaymentFailed = async (event) => {
   console.log('Subscription payment failed:', payment.id);
   
   const order = await Order.findOne({ 
-    'paypalDetails.subscriptionId': payment.billing_agreement_id 
+    $or: [
+      { 'recurringDetails.paypalSubscriptionId': payment.billing_agreement_id },
+      { 'paypalDetails.subscriptionId': payment.billing_agreement_id },
+      { 'transactionDetails.subscription_id': payment.billing_agreement_id },
+      { externalId: payment.billing_agreement_id }
+    ]
   });
   
   if (order) {
@@ -665,7 +696,12 @@ const handleSubscriptionCancelled = async (event) => {
   console.log('Subscription cancelled:', subscription.id);
   
   const order = await Order.findOne({ 
-    'paypalDetails.subscriptionId': subscription.id 
+    $or: [
+      { 'recurringDetails.paypalSubscriptionId': subscription.id },
+      { 'paypalDetails.subscriptionId': subscription.id },
+      { 'transactionDetails.subscription_id': subscription.id },
+      { externalId: subscription.id }
+    ]
   });
   
   if (order) {
@@ -691,7 +727,12 @@ const handleSubscriptionSuspended = async (event) => {
   console.log('Subscription suspended:', subscription.id);
   
   const order = await Order.findOne({ 
-    'paypalDetails.subscriptionId': subscription.id 
+    $or: [
+      { 'recurringDetails.paypalSubscriptionId': subscription.id },
+      { 'paypalDetails.subscriptionId': subscription.id },
+      { 'transactionDetails.subscription_id': subscription.id },
+      { externalId: subscription.id }
+    ]
   });
   
   if (order) {
