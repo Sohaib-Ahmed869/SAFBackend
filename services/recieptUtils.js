@@ -5,6 +5,98 @@ const path = require("path");
 const { sendEmail } = require("./emailUtil");
 const os = require("os");
 
+// Bundled Unicode font that covers Latin + Arabic/Urdu and other scripts.
+// Placed at SAFBackend/public/fonts/NotoSansArabic-Regular.ttf during setup.
+const BUNDLED_FONT_PATH = path.join(
+  __dirname,
+  "../public/fonts/NotoSansArabic-Regular.ttf"
+);
+
+const getBundledFontPath = () => {
+  try {
+    if (fs.existsSync(BUNDLED_FONT_PATH)) {
+      return BUNDLED_FONT_PATH;
+    }
+    console.warn(
+      "Bundled Unicode font not found at",
+      BUNDLED_FONT_PATH,
+      "— falling back to Helvetica"
+    );
+    return null;
+  } catch (err) {
+    console.warn("Error checking bundled font path:", err);
+    return null;
+  }
+};
+
+// Detect if a string contains non-Latin characters (Arabic, Urdu, Hindi, etc.)
+const hasNonLatinChars = (text) => {
+  if (!text) return false;
+  return /[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F]/.test(
+    text
+  );
+};
+
+const NON_LATIN_RE =
+  /[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F]/;
+const LATIN_RE =
+  /[\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F]/;
+
+// Split a string into alternating Latin / non-Latin segments.
+const splitByScript = (str) => {
+  const segments = [];
+  let i = 0;
+  while (i < str.length) {
+    if (NON_LATIN_RE.test(str[i])) {
+      let j = i;
+      while (j < str.length && NON_LATIN_RE.test(str[j])) j++;
+      segments.push({ text: str.slice(i, j), isLatin: false });
+      i = j;
+    } else {
+      let j = i;
+      while (j < str.length && LATIN_RE.test(str[j])) j++;
+      segments.push({ text: str.slice(i, j), isLatin: true });
+      i = j;
+    }
+  }
+  return segments;
+};
+
+// PDFKit helper: render text with auto font switching per segment.
+const smartTextPDFKit = (doc, text, x, y, bodyFontName, options) => {
+  if (!text) return;
+  const str = String(text);
+
+  if (!bodyFontName || bodyFontName === "Helvetica" || !hasNonLatinChars(str)) {
+    doc.font("Helvetica").text(str, x, y, options);
+    return;
+  }
+
+  const segments = splitByScript(str);
+  const last = segments.length - 1;
+
+  for (let i = 0; i <= last; i++) {
+    const seg = segments[i];
+    const font = seg.isLatin ? "Helvetica" : bodyFontName;
+    const isFirst = i === 0;
+    const isLast = i === last;
+
+    doc.font(font);
+
+    if (isFirst && !isLast) {
+      doc.text(seg.text, x, y, { ...options, continued: true });
+    } else if (isFirst && isLast) {
+      doc.text(seg.text, x, y, options);
+    } else if (isLast) {
+      doc.text(seg.text, options);
+    } else {
+      doc.text(seg.text, { continued: true });
+    }
+  }
+
+  doc.font("Helvetica");
+};
+
 /**
  * Generates a PDF receipt for an order
  * @param {Object} order - The order object
@@ -33,6 +125,17 @@ const generateReceiptPDF = async (
     try {
       // Create a new PDF document
       const doc = new PDFDocument({ margin: 50 });
+
+      let bodyFontName = "Helvetica";
+      const fontPath = getBundledFontPath();
+      if (fontPath) {
+        try {
+          doc.registerFont("NotoSansArabic", fontPath);
+          bodyFontName = "NotoSansArabic";
+        } catch (fontError) {
+          console.warn("Failed to register bundled font, falling back to Helvetica:", fontError);
+        }
+      }
       const writeStream = fs.createWriteStream(filePath);
 
       // Pipe the PDF to the file
@@ -83,16 +186,17 @@ const generateReceiptPDF = async (
       }
       doc.text(`Reference: ${reference}`, 400, 170);
 
-      // Add donor details
+      // Add donor details — use smart font switching for user-entered text
       doc.moveDown(2);
-      doc.fontSize(10).text(`Name: ${order.donorDetails.name}`, 50, 210);
+      doc.fontSize(10);
+      smartTextPDFKit(doc, `Name: ${order.donorDetails.name}`, 50, 210, bodyFontName);
 
       if (order.donorDetails.address) {
         const address = formatAddress(order.donorDetails.address);
-        doc.text(`Address: ${address}`);
+        smartTextPDFKit(doc, `Address: ${address}`, undefined, undefined, bodyFontName);
       }
 
-      doc.text(`Email: ${order.donorDetails.email}`);
+      doc.font("Helvetica").text(`Email: ${order.donorDetails.email}`);
 
       if (order.donorDetails.phone) {
         doc.text(`Phone: ${order.donorDetails.phone}`);
@@ -106,7 +210,7 @@ const generateReceiptPDF = async (
         pdfItemTypes.length > 0
           ? pdfItemTypes.join(", ")
           : order.donationTypeName || order.donationType || "Sadaqah";
-      doc.text(`Donation Type: ${pdfDonationType}`);
+      smartTextPDFKit(doc, `Donation Type: ${pdfDonationType}`, undefined, undefined, bodyFontName);
 
       // Add donation table
       doc.moveDown(2);
@@ -127,8 +231,9 @@ const generateReceiptPDF = async (
         headerData,
         tableData,
         50,
-        doc.y
-      );
+        doc.y,
+        bodyFontName
+      );
 
       // Calculate total amount
       let totalAmount = 0;
@@ -248,6 +353,17 @@ const generateStatementPDF = async (statement, userEmail) => {
   // Create a new PDF document
   const doc = new PDFDocument({ margin: 50 });
 
+  let bodyFontName = "Helvetica";
+  const fontPath = getBundledFontPath();
+  if (fontPath) {
+    try {
+      doc.registerFont("NotoSansArabic", fontPath);
+      bodyFontName = "NotoSansArabic";
+    } catch (fontError) {
+      console.warn("Failed to register bundled font, falling back to Helvetica:", fontError);
+    }
+  }
+
   // Pipe the PDF to the file
   const stream = fs.createWriteStream(filePath);
   doc.pipe(stream);
@@ -273,10 +389,9 @@ const generateStatementPDF = async (statement, userEmail) => {
      .font("Helvetica-Bold")
      .text("Donor Information:");
   
-  doc.fontSize(10)
-     .font("Helvetica")
-     .text(`Name: ${statement.user.name}`);
-  doc.text(`Email: ${statement.user.email}`);
+  doc.fontSize(10);
+  smartTextPDFKit(doc, `Name: ${statement.user.name}`, undefined, undefined, bodyFontName);
+  doc.font("Helvetica").text(`Email: ${statement.user.email}`);
   doc.text(`Statement ID: ${statement.statementId}`);
   doc.text(`Generated: ${new Date(statement.generatedAt).toLocaleDateString()}`);
 
@@ -426,14 +541,14 @@ const generateStatementPDF = async (statement, userEmail) => {
        .font("Helvetica");
 
     statement.breakdown.p2pDonations.forEach((donation, index) => {
-      doc.text(`${index + 1}. Campaign: ${donation.campaignTitle}`);
-      doc.text(`   Date: ${new Date(donation.createdAt).toLocaleDateString()}`);
+      smartTextPDFKit(doc, `${index + 1}. Campaign: ${donation.campaignTitle}`, undefined, undefined, bodyFontName);
+      doc.font("Helvetica").text(`   Date: ${new Date(donation.createdAt).toLocaleDateString()}`);
       doc.text(`   Amount: $${donation.amount.toFixed(2)}`);
       doc.text(`   Net Amount: $${donation.netAmount.toFixed(2)}`);
       doc.text(`   Transaction Fee: $${donation.transactionFee.toFixed(2)}`);
       doc.text(`   Payment Method: ${donation.paymentMethod}`);
       if (donation.message) {
-        doc.text(`   Message: ${donation.message}`);
+        smartTextPDFKit(doc, `   Message: ${donation.message}`, undefined, undefined, bodyFontName);
       }
       doc.moveDown(0.3);
     });
@@ -730,9 +845,17 @@ const createTable = (doc, data, x, y) => {
  * @param {Array} bodyData - Data rows
  * @param {number} x - X position
  * @param {number} y - Y position
+ * @param {string} [bodyFontName] - Optional font name to use for body rows (for Unicode text like Urdu)
  * @returns {number} - The new Y position after drawing the table
  */
-const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
+const createTableWithSeparateHeader = (
+  doc,
+  headerData,
+  bodyData,
+  x,
+  y,
+  bodyFontName
+) => {
   // Set column widths
   const dateColWidth = 100;
   const descColWidth = 280;
@@ -745,6 +868,9 @@ const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
   // Fixed header height
   const headerHeight = 25;
 
+  const resolvedHeaderFont = "Helvetica-Bold";
+  const unicodeFont = bodyFontName && bodyFontName !== "Helvetica" ? bodyFontName : null;
+
   // Draw header background
   doc
     .fillColor("#f5f5f5")
@@ -753,7 +879,7 @@ const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
     .fillColor("black");
 
   // Draw header text with consistent positioning
-  doc.font("Helvetica-Bold").fontSize(9);
+  doc.font(resolvedHeaderFont).fontSize(9);
 
   // Center text vertically in header cells
   const textY = currentY + headerHeight / 2 - 4;
@@ -776,7 +902,6 @@ const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
     align: "right",
   });
 
-  // Reset font
   doc.font("Helvetica");
 
   // Draw border around header
@@ -806,21 +931,46 @@ const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
     // Ensure minimum row height (25 pixels) or more if needed
     const rowHeight = Math.max(25, descriptionHeight + 10);
 
-    // Draw cell content with consistent positioning
-    doc.fontSize(9);
+    doc.font("Helvetica").fontSize(9);
 
-    // Date column (vertically aligned to top with padding)
+    // Date column (always Latin)
     doc.text(row.donation_date, x + 5, currentY + 5, {
       width: dateColWidth - 10,
     });
 
-    // Description column
-    doc.text(row.description, x + dateColWidth + 5, currentY + 5, {
-      width: descColWidth - 10,
-    });
+    // Description column (may contain non-Latin text like Urdu names)
+    if (unicodeFont && hasNonLatinChars(row.description)) {
+      const segments = splitByScript(String(row.description));
+      const lastIdx = segments.length - 1;
 
-    // Amount column
-    doc.text(row.amount, x + dateColWidth + descColWidth + 5, currentY + 5, {
+      for (let si = 0; si <= lastIdx; si++) {
+        const seg = segments[si];
+        doc.font(seg.isLatin ? "Helvetica" : unicodeFont);
+
+        if (si === 0 && lastIdx > 0) {
+          doc.text(seg.text, x + dateColWidth + 5, currentY + 5, {
+            width: descColWidth - 10,
+            continued: true,
+          });
+        } else if (si === 0 && lastIdx === 0) {
+          doc.text(seg.text, x + dateColWidth + 5, currentY + 5, {
+            width: descColWidth - 10,
+          });
+        } else if (si === lastIdx) {
+          doc.text(seg.text);
+        } else {
+          doc.text(seg.text, { continued: true });
+        }
+      }
+      doc.font("Helvetica");
+    } else {
+      doc.text(row.description, x + dateColWidth + 5, currentY + 5, {
+        width: descColWidth - 10,
+      });
+    }
+
+    // Amount column (always Latin)
+    doc.font("Helvetica").text(row.amount, x + dateColWidth + descColWidth + 5, currentY + 5, {
       width: amountColWidth - 10,
       align: "right",
     });
