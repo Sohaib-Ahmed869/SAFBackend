@@ -2686,7 +2686,28 @@ exports.proxyReceiptForViewing = async (req, res) => {
 exports.generateStatement = async (req, res) => {
   try {
     const { financialYear } = req.query;
-    const userId = req.user._id;
+    const isAdminRequest = req.user?.role === "admin" && !!req.query.userId;
+    const targetUserId = isAdminRequest ? req.query.userId : req.user._id;
+
+    let targetUser = req.user;
+    if (isAdminRequest) {
+      targetUser = await User.findById(targetUserId).select(
+        "firstName lastName name email"
+      );
+      if (!targetUser) {
+        return res.status(404).json({
+          status: "Error",
+          message: "Donor not found",
+        });
+      }
+    }
+
+    const userId = targetUserId;
+    const targetUserEmail = targetUser.email;
+    const targetUserName =
+      targetUser.firstName || targetUser.lastName
+        ? `${targetUser.firstName || ""} ${targetUser.lastName || ""}`.trim()
+        : targetUser.name || "";
 
     // Validate financial year format (e.g., "2023-2024")
     if (!financialYear || !/^\d{4}-\d{4}$/.test(financialYear)) {
@@ -2720,7 +2741,7 @@ exports.generateStatement = async (req, res) => {
 
     // Get P2P donations (GoFundMe donations) for the user in the financial year
     const goFundMeDonations = await GoFundMeDonation.find({
-      donorEmail: req.user.email,
+      donorEmail: targetUserEmail,
       createdAt: { $gte: startDate, $lte: endDate },
       paymentStatus: "completed"
     }).populate('goFundMeId', 'title slug');
@@ -2737,8 +2758,8 @@ exports.generateStatement = async (req, res) => {
     const statement = {
       financialYear,
       user: {
-        name: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(),
-        email: req.user.email,
+        name: targetUserName,
+        email: targetUserEmail,
         userId: userId
       },
       period: {
@@ -3050,7 +3071,28 @@ exports.getAvailableFinancialYears = async (req, res) => {
 exports.downloadStatementPDF = async (req, res) => {
   try {
     const { financialYear } = req.query;
-    const userId = req.user._id;
+    const isAdminRequest = req.user?.role === "admin" && !!req.query.userId;
+    const targetUserId = isAdminRequest ? req.query.userId : req.user._id;
+
+    let targetUser = req.user;
+    if (isAdminRequest) {
+      targetUser = await User.findById(targetUserId).select(
+        "firstName lastName name email"
+      );
+      if (!targetUser) {
+        return res.status(404).json({
+          status: "Error",
+          message: "Donor not found",
+        });
+      }
+    }
+
+    const userId = targetUserId;
+    const targetUserEmail = targetUser.email;
+    const targetUserName =
+      targetUser.firstName || targetUser.lastName
+        ? `${targetUser.firstName || ""} ${targetUser.lastName || ""}`.trim()
+        : targetUser.name || "";
 
     // Validate financial year format
     if (!financialYear || !/^\d{4}-\d{4}$/.test(financialYear)) {
@@ -3083,7 +3125,7 @@ exports.downloadStatementPDF = async (req, res) => {
 
     // Get P2P donations for the user in the financial year
     const goFundMeDonations = await GoFundMeDonation.find({
-      donorEmail: req.user.email,
+      donorEmail: targetUserEmail,
       createdAt: { $gte: startDate, $lte: endDate },
       paymentStatus: "completed"
     }).populate('goFundMeId', 'title slug');
@@ -3100,8 +3142,8 @@ exports.downloadStatementPDF = async (req, res) => {
     const statement = {
       financialYear,
       user: {
-        name: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(),
-        email: req.user.email,
+        name: targetUserName,
+        email: targetUserEmail,
         userId: userId
       },
       period: {
@@ -3303,7 +3345,7 @@ exports.downloadStatementPDF = async (req, res) => {
     statement.generatedAt = new Date().toISOString();
 
     // Generate PDF
-    const { filePath, fileName } = await generateStatementPDF(statement, req.user.email);
+    const { filePath, fileName } = await generateStatementPDF(statement, targetUserEmail);
 
     // Send the PDF file
     res.download(filePath, fileName, (err) => {

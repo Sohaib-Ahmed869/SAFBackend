@@ -5,98 +5,6 @@ const path = require("path");
 const { sendEmail } = require("./emailUtil");
 const os = require("os");
 
-// Bundled Unicode font that covers Latin + Arabic/Urdu and other scripts.
-// Placed at SAFBackend/public/fonts/NotoSansArabic-Regular.ttf during setup.
-const BUNDLED_FONT_PATH = path.join(
-  __dirname,
-  "../public/fonts/NotoSansArabic-Regular.ttf"
-);
-
-const getBundledFontPath = () => {
-  try {
-    if (fs.existsSync(BUNDLED_FONT_PATH)) {
-      return BUNDLED_FONT_PATH;
-    }
-    console.warn(
-      "Bundled Unicode font not found at",
-      BUNDLED_FONT_PATH,
-      "— falling back to Helvetica"
-    );
-    return null;
-  } catch (err) {
-    console.warn("Error checking bundled font path:", err);
-    return null;
-  }
-};
-
-// Detect if a string contains non-Latin characters (Arabic, Urdu, Hindi, etc.)
-const hasNonLatinChars = (text) => {
-  if (!text) return false;
-  return /[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F]/.test(
-    text
-  );
-};
-
-const NON_LATIN_RE =
-  /[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F]/;
-const LATIN_RE =
-  /[\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F]/;
-
-// Split a string into alternating Latin / non-Latin segments.
-const splitByScript = (str) => {
-  const segments = [];
-  let i = 0;
-  while (i < str.length) {
-    if (NON_LATIN_RE.test(str[i])) {
-      let j = i;
-      while (j < str.length && NON_LATIN_RE.test(str[j])) j++;
-      segments.push({ text: str.slice(i, j), isLatin: false });
-      i = j;
-    } else {
-      let j = i;
-      while (j < str.length && LATIN_RE.test(str[j])) j++;
-      segments.push({ text: str.slice(i, j), isLatin: true });
-      i = j;
-    }
-  }
-  return segments;
-};
-
-// PDFKit helper: render text with auto font switching per segment.
-const smartTextPDFKit = (doc, text, x, y, bodyFontName, options) => {
-  if (!text) return;
-  const str = String(text);
-
-  if (!bodyFontName || bodyFontName === "Helvetica" || !hasNonLatinChars(str)) {
-    doc.font("Helvetica").text(str, x, y, options);
-    return;
-  }
-
-  const segments = splitByScript(str);
-  const last = segments.length - 1;
-
-  for (let i = 0; i <= last; i++) {
-    const seg = segments[i];
-    const font = seg.isLatin ? "Helvetica" : bodyFontName;
-    const isFirst = i === 0;
-    const isLast = i === last;
-
-    doc.font(font);
-
-    if (isFirst && !isLast) {
-      doc.text(seg.text, x, y, { ...options, continued: true });
-    } else if (isFirst && isLast) {
-      doc.text(seg.text, x, y, options);
-    } else if (isLast) {
-      doc.text(seg.text, options);
-    } else {
-      doc.text(seg.text, { continued: true });
-    }
-  }
-
-  doc.font("Helvetica");
-};
-
 /**
  * Generates a PDF receipt for an order
  * @param {Object} order - The order object
@@ -125,17 +33,6 @@ const generateReceiptPDF = async (
     try {
       // Create a new PDF document
       const doc = new PDFDocument({ margin: 50 });
-
-      let bodyFontName = "Helvetica";
-      const fontPath = getBundledFontPath();
-      if (fontPath) {
-        try {
-          doc.registerFont("NotoSansArabic", fontPath);
-          bodyFontName = "NotoSansArabic";
-        } catch (fontError) {
-          console.warn("Failed to register bundled font, falling back to Helvetica:", fontError);
-        }
-      }
       const writeStream = fs.createWriteStream(filePath);
 
       // Pipe the PDF to the file
@@ -186,17 +83,16 @@ const generateReceiptPDF = async (
       }
       doc.text(`Reference: ${reference}`, 400, 170);
 
-      // Add donor details — use smart font switching for user-entered text
+      // Add donor details
       doc.moveDown(2);
-      doc.fontSize(10);
-      smartTextPDFKit(doc, `Name: ${order.donorDetails.name}`, 50, 210, bodyFontName);
+      doc.fontSize(10).text(`Name: ${order.donorDetails.name}`, 50, 210);
 
       if (order.donorDetails.address) {
         const address = formatAddress(order.donorDetails.address);
-        smartTextPDFKit(doc, `Address: ${address}`, undefined, undefined, bodyFontName);
+        doc.text(`Address: ${address}`);
       }
 
-      doc.font("Helvetica").text(`Email: ${order.donorDetails.email}`);
+      doc.text(`Email: ${order.donorDetails.email}`);
 
       if (order.donorDetails.phone) {
         doc.text(`Phone: ${order.donorDetails.phone}`);
@@ -210,7 +106,7 @@ const generateReceiptPDF = async (
         pdfItemTypes.length > 0
           ? pdfItemTypes.join(", ")
           : order.donationTypeName || order.donationType || "Sadaqah";
-      smartTextPDFKit(doc, `Donation Type: ${pdfDonationType}`, undefined, undefined, bodyFontName);
+      doc.text(`Donation Type: ${pdfDonationType}`);
 
       // Add donation table
       doc.moveDown(2);
@@ -231,9 +127,8 @@ const generateReceiptPDF = async (
         headerData,
         tableData,
         50,
-        doc.y,
-        bodyFontName
-      );
+        doc.y
+      );
 
       // Calculate total amount
       let totalAmount = 0;
@@ -304,11 +199,68 @@ const generateReceiptPDF = async (
         doc.fillColor("black");
       }
 
-      // Add footer
-      doc.moveDown(3);
+      // Add tax footer (must match the "My donations" receipt styling)
+      const pageWidth = doc.page?.width || 595;
+      const marginX = 50;
+      const availableWidth = pageWidth - marginX * 2;
+
+      // Tax Information heading
+      doc.moveDown(1.5);
+      doc.fontSize(9).fillColor("#008000").font("Helvetica").text("Tax Information", marginX, doc.y, {
+        width: availableWidth,
+        align: "center",
+      });
+
+      // Tax information text
+      doc.moveDown(0.2);
+      doc.fontSize(8).fillColor("#000000").font("Helvetica").text(
+        "All donations are tax-deductible to the extent allowed by law.",
+        marginX,
+        doc.y,
+        { width: availableWidth, align: "center" }
+      );
+      doc.moveDown(0.2);
+      doc.fontSize(8).fillColor("#000000").font("Helvetica").text(
+        "This receipt is for tax purposes only. Please retain for your records.",
+        marginX,
+        doc.y,
+        { width: availableWidth, align: "center" }
+      );
+
+      // Separator line
+      const lineY = doc.y + 14;
+      doc.save();
+      doc.strokeColor("#C8C8C8").lineWidth(0.5);
+      doc
+        .moveTo(marginX + 40, lineY)
+        .lineTo(pageWidth - (marginX + 40), lineY)
+        .stroke();
+      doc.restore();
+
+      // Fundraising Authority numbers
+      doc.y = lineY + 18;
+      doc.fontSize(7).fillColor("#646464").font("Helvetica").text(
+        "Fundraising Authority",
+        marginX,
+        doc.y,
+        { width: availableWidth, align: "center" }
+      );
+      doc.y = doc.y + 10;
+      doc.fontSize(6.5).fillColor("#646464").font("Helvetica").text(
+        " NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569",
+        marginX,
+        doc.y,
+        { width: availableWidth, align: "center" }
+      );
+
+      // Existing website/contact footer
       const footerText =
         "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)";
-      doc.fontSize(9).text(footerText, 50, 700, { align: "center" });
+      doc.moveDown(1.2);
+      doc.fontSize(9).fillColor("#000000").text(footerText, marginX, doc.y, {
+        width: availableWidth,
+        align: "center",
+      });
 
       // Finalize the PDF and end the stream
       doc.end();
@@ -353,20 +305,22 @@ const generateStatementPDF = async (statement, userEmail) => {
   // Create a new PDF document
   const doc = new PDFDocument({ margin: 50 });
 
-  let bodyFontName = "Helvetica";
-  const fontPath = getBundledFontPath();
-  if (fontPath) {
-    try {
-      doc.registerFont("NotoSansArabic", fontPath);
-      bodyFontName = "NotoSansArabic";
-    } catch (fontError) {
-      console.warn("Failed to register bundled font, falling back to Helvetica:", fontError);
-    }
-  }
-
   // Pipe the PDF to the file
   const stream = fs.createWriteStream(filePath);
   doc.pipe(stream);
+
+  // Add logos to match receipt styling
+  const logoPath = path.join(__dirname, "../public/images/logo.png");
+  const taxLogoPath = path.join(__dirname, "../public/images/tax-deductible.png");
+  if (fs.existsSync(logoPath)) {
+    doc.image(logoPath, 50, 45, { width: 100 });
+  }
+  if (fs.existsSync(taxLogoPath)) {
+    doc.image(taxLogoPath, 450, 45, { width: 100, height: 50 });
+  }
+
+  // Ensure header starts below the logos
+  doc.y = 120;
 
   // Add header
   doc.fontSize(24)
@@ -389,9 +343,10 @@ const generateStatementPDF = async (statement, userEmail) => {
      .font("Helvetica-Bold")
      .text("Donor Information:");
   
-  doc.fontSize(10);
-  smartTextPDFKit(doc, `Name: ${statement.user.name}`, undefined, undefined, bodyFontName);
-  doc.font("Helvetica").text(`Email: ${statement.user.email}`);
+  doc.fontSize(10)
+     .font("Helvetica")
+     .text(`Name: ${statement.user.name}`);
+  doc.text(`Email: ${statement.user.email}`);
   doc.text(`Statement ID: ${statement.statementId}`);
   doc.text(`Generated: ${new Date(statement.generatedAt).toLocaleDateString()}`);
 
@@ -443,117 +398,92 @@ const generateStatementPDF = async (statement, userEmail) => {
     doc.moveDown(1);
   }
 
-  // Add detailed breakdown
-  doc.fontSize(14)
-     .font("Helvetica-Bold")
-     .text("Detailed Breakdown:", { underline: true });
-
-  doc.moveDown(0.5);
-
-  // One-time payments
-  if (statement.breakdown.oneTimePayments.length > 0) {
-    doc.fontSize(12)
-       .font("Helvetica-Bold")
-       .text("One-Time Payments:");
-
-    doc.moveDown(0.5);
-    doc.fontSize(9)
-       .font("Helvetica");
-
-    statement.breakdown.oneTimePayments.forEach((payment, index) => {
-      doc.text(`${index + 1}. Donation ID: ${payment.donationId}`);
-      doc.text(`   Date: ${new Date(payment.createdAt).toLocaleDateString()}`);
-      doc.text(`   Amount: $${payment.actualPayments.toFixed(2)}`);
-      doc.text(`   Payment Method: ${payment.paymentMethod}`);
-      doc.text(`   Status: ${payment.paymentStatus}`);
-      doc.moveDown(0.3);
+  // Donation table (tabular format like receipt PDFs)
+  const tableRows = [];
+  const pushRow = (dateValue, description, amountValue) => {
+    if (!dateValue) return;
+    const safeAmount = Number(amountValue || 0);
+    const safeDesc = (description || "").toString().trim() || "Donation";
+    tableRows.push({
+      donation_date: formatDate(dateValue),
+      description: safeDesc,
+      amount: `$${safeAmount.toFixed(2)}`
     });
+  };
 
-    doc.moveDown(0.5);
-  }
+  // One-time payments: use paymentHistory (each successful charge)
+  statement.breakdown.oneTimePayments.forEach((payment) => {
+    const donationTitle =
+      payment.items?.[0]?.title || payment.donationType || "Sadaqah";
 
-  // Recurring payments
-  if (statement.breakdown.recurringPayments.length > 0) {
-    doc.fontSize(12)
-       .font("Helvetica-Bold")
-       .text("Recurring Payments:");
+    if (Array.isArray(payment.paymentHistory) && payment.paymentHistory.length) {
+      payment.paymentHistory.forEach((hist) => {
+        pushRow(hist.date, donationTitle, hist.amount);
+      });
+    } else {
+      pushRow(payment.createdAt, donationTitle, payment.actualPayments);
+    }
+  });
 
-    doc.moveDown(0.5);
-    doc.fontSize(9)
-       .font("Helvetica");
+  // Recurring payments: use paymentHistory (each successful invoice/payment)
+  statement.breakdown.recurringPayments.forEach((payment) => {
+    const donationTitle =
+      payment.items?.[0]?.title || payment.donationType || "Sadaqah";
 
-    statement.breakdown.recurringPayments.forEach((payment, index) => {
-      doc.text(`${index + 1}. Donation ID: ${payment.donationId}`);
-      doc.text(`   Frequency: ${payment.recurringDetails.frequency}`);
-      doc.text(`   Amount per payment: $${payment.recurringDetails.amount.toFixed(2)}`);
-      doc.text(`   Total paid this year: $${payment.actualPayments.toFixed(2)}`);
-      doc.text(`   Status: ${payment.recurringDetails.status}`);
-      
-      if (payment.paymentHistory.length > 0) {
-        doc.text(`   Payment History:`);
-        payment.paymentHistory.forEach((hist, histIndex) => {
-          doc.text(`     ${histIndex + 1}. ${new Date(hist.date).toLocaleDateString()} - $${hist.amount.toFixed(2)}`);
-        });
-      }
-      doc.moveDown(0.3);
-    });
+    if (Array.isArray(payment.paymentHistory) && payment.paymentHistory.length) {
+      payment.paymentHistory.forEach((hist) => {
+        pushRow(hist.date, donationTitle, hist.amount);
+      });
+    } else {
+      pushRow(payment.createdAt, donationTitle, payment.actualPayments);
+    }
+  });
 
-    doc.moveDown(0.5);
-  }
+  // Installments: use paymentHistory (each completed installment)
+  statement.breakdown.installmentPayments.forEach((payment) => {
+    const donationTitle =
+      payment.items?.[0]?.title || payment.donationType || "Sadaqah";
 
-  // Installment payments
-  if (statement.breakdown.installmentPayments.length > 0) {
-    doc.fontSize(12)
-       .font("Helvetica-Bold")
-       .text("Installment Payments:");
-
-    doc.moveDown(0.5);
-    doc.fontSize(9)
-       .font("Helvetica");
-
-    statement.breakdown.installmentPayments.forEach((payment, index) => {
-      doc.text(`${index + 1}. Donation ID: ${payment.donationId}`);
-      doc.text(`   Installment Amount: $${payment.installmentDetails.installmentAmount.toFixed(2)}`);
-      doc.text(`   Total installments: ${payment.installmentDetails.numberOfInstallments}`);
-      doc.text(`   Paid this year: $${payment.actualPayments.toFixed(2)}`);
-      doc.text(`   Status: ${payment.installmentDetails.status}`);
-      
-      if (payment.paymentHistory.length > 0) {
-        doc.text(`   Payment History:`);
-        payment.paymentHistory.forEach((hist, histIndex) => {
-          doc.text(`     ${histIndex + 1}. Installment ${hist.installmentNumber} - ${new Date(hist.date).toLocaleDateString()} - $${hist.amount.toFixed(2)}`);
-        });
-      }
-      doc.moveDown(0.3);
-    });
-
-    doc.moveDown(0.5);
-  }
+    if (Array.isArray(payment.paymentHistory) && payment.paymentHistory.length) {
+      payment.paymentHistory.forEach((hist) => {
+        const installmentLabel =
+          hist.installmentNumber != null ? ` - Installment ${hist.installmentNumber}` : "";
+        pushRow(hist.date, `${donationTitle}${installmentLabel}`, hist.amount);
+      });
+    } else {
+      pushRow(payment.createdAt, donationTitle, payment.actualPayments);
+    }
+  });
 
   // P2P donations
-  if (statement.breakdown.p2pDonations.length > 0) {
-    doc.fontSize(12)
-       .font("Helvetica-Bold")
-       .text("P2P Donations:");
+  statement.breakdown.p2pDonations.forEach((donation) => {
+    pushRow(
+      donation.createdAt,
+      donation.campaignTitle || "GoFundMe Campaign",
+      donation.amount
+    );
+  });
 
-    doc.moveDown(0.5);
-    doc.fontSize(9)
-       .font("Helvetica");
+  doc.fontSize(14)
+    .font("Helvetica-Bold")
+    .text("Donation History:", { underline: true });
+  doc.moveDown(0.5);
 
-    statement.breakdown.p2pDonations.forEach((donation, index) => {
-      smartTextPDFKit(doc, `${index + 1}. Campaign: ${donation.campaignTitle}`, undefined, undefined, bodyFontName);
-      doc.font("Helvetica").text(`   Date: ${new Date(donation.createdAt).toLocaleDateString()}`);
-      doc.text(`   Amount: $${donation.amount.toFixed(2)}`);
-      doc.text(`   Net Amount: $${donation.netAmount.toFixed(2)}`);
-      doc.text(`   Transaction Fee: $${donation.transactionFee.toFixed(2)}`);
-      doc.text(`   Payment Method: ${donation.paymentMethod}`);
-      if (donation.message) {
-        smartTextPDFKit(doc, `   Message: ${donation.message}`, undefined, undefined, bodyFontName);
-      }
-      doc.moveDown(0.3);
-    });
+  if (tableRows.length > 0) {
+    const headerData = {
+      donation_date: "Donation Date",
+      description: "Description",
+      amount: "Donation Amount",
+    };
 
-    doc.moveDown(0.5);
+    // Draw the table starting from the current cursor Y
+    const tableY = createTableWithSeparateHeader(doc, headerData, tableRows, 50, doc.y);
+    doc.y = tableY + 10;
+    // Reset x so subsequent sections don't inherit table's last X position.
+    doc.x = 50;
+  } else {
+    doc.fontSize(10).font("Helvetica").text("No donations found for this financial year.");
+    doc.moveDown(1);
   }
 
   // Add monthly summary
@@ -564,6 +494,9 @@ const generateStatementPDF = async (statement, userEmail) => {
   doc.moveDown(0.5);
   doc.fontSize(9)
      .font("Helvetica");
+
+  // Ensure monthly summary starts from left margin
+  doc.x = 50;
 
   Object.entries(statement.monthlySummary).forEach(([month, data]) => {
     if (data.totalAmount > 0) {
@@ -578,14 +511,67 @@ const generateStatementPDF = async (statement, userEmail) => {
     }
   });
 
-  // Add footer
-  doc.moveDown(2);
-  doc.fontSize(10)
-     .font("Helvetica")
-     .text("Thank you for your generous support of the Shahid Afridi Foundation.", { align: "center" });
-  
-  doc.moveDown(0.5);
-  doc.text("This statement is generated for your records and may be used for tax purposes.", { align: "center" });
+  // Receipt-like footer: draw with absolute Y positions so it never splits to another page.
+  const pageHeight = doc.page?.height || 842; // A4-ish fallback
+  const pageWidth = doc.page?.width || 595;
+  const marginX = 50;
+  const footerWidth = pageWidth - marginX * 2;
+
+  const taxHeadingY = pageHeight - 155;
+  const taxLine1Y = taxHeadingY + 12;
+  const taxLine2Y = taxLine1Y + 10;
+  const separatorY = taxLine2Y + 26;
+  const fundraisingTitleY = separatorY + 18;
+  const fundraisingNumbersY = fundraisingTitleY + 10;
+  const footerY = pageHeight - 35;
+
+  // Tax Information heading
+  doc.fontSize(8).font("Helvetica").fillColor("#008000").text("Tax Information", marginX, taxHeadingY, {
+    width: footerWidth,
+    align: "center",
+  });
+
+  // Tax information lines
+  doc.fontSize(8).fillColor("#000000").font("Helvetica")
+    .text("All donations are tax-deductible to the extent allowed by law.", marginX, taxLine1Y, {
+      width: footerWidth,
+      align: "center",
+    });
+
+  doc.fontSize(8).fillColor("#000000").font("Helvetica")
+    .text("This receipt is for tax purposes only. Please retain for your records.", marginX, taxLine2Y, {
+      width: footerWidth,
+      align: "center",
+    });
+
+  // Separator line
+  doc.save();
+  doc.strokeColor("#C8C8C8").lineWidth(0.5);
+  const lineX1 = marginX + 40;
+  const lineX2 = pageWidth - (marginX + 40);
+  doc.moveTo(lineX1, separatorY).lineTo(lineX2, separatorY).stroke();
+  doc.restore();
+
+  // Fundraising Authority
+  doc.fontSize(8).fillColor("#646464").font("Helvetica").text("Fundraising Authority", marginX, fundraisingTitleY, {
+    width: footerWidth,
+    align: "center",
+  });
+
+  doc.fontSize(7).fillColor("#646464").font("Helvetica").text(
+    "NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569",
+    marginX,
+    fundraisingNumbersY,
+    { width: footerWidth, align: "center" }
+  );
+
+  // Website + contact footer
+  const footerText =
+    "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)";
+  doc.fontSize(8).fillColor("#000000").font("Helvetica").text(footerText, marginX, footerY, {
+    width: footerWidth,
+    align: "center",
+  });
 
   // Finalize the PDF and end the stream
   doc.end();
@@ -845,17 +831,9 @@ const createTable = (doc, data, x, y) => {
  * @param {Array} bodyData - Data rows
  * @param {number} x - X position
  * @param {number} y - Y position
- * @param {string} [bodyFontName] - Optional font name to use for body rows (for Unicode text like Urdu)
  * @returns {number} - The new Y position after drawing the table
  */
-const createTableWithSeparateHeader = (
-  doc,
-  headerData,
-  bodyData,
-  x,
-  y,
-  bodyFontName
-) => {
+const createTableWithSeparateHeader = (doc, headerData, bodyData, x, y) => {
   // Set column widths
   const dateColWidth = 100;
   const descColWidth = 280;
@@ -868,58 +846,64 @@ const createTableWithSeparateHeader = (
   // Fixed header height
   const headerHeight = 25;
 
-  const resolvedHeaderFont = "Helvetica-Bold";
-  const unicodeFont = bodyFontName && bodyFontName !== "Helvetica" ? bodyFontName : null;
+  const topMargin = doc.page?.margins?.top ?? 50;
+  const bottomMargin = doc.page?.margins?.bottom ?? 50;
 
-  // Draw header background
-  doc
-    .fillColor("#f5f5f5")
-    .rect(x, currentY, totalWidth, headerHeight)
-    .fill()
-    .fillColor("black");
+  const drawHeader = (headerY) => {
+    // Draw header background
+    doc
+      .fillColor("#f5f5f5")
+      .rect(x, headerY, totalWidth, headerHeight)
+      .fill()
+      .fillColor("black");
 
-  // Draw header text with consistent positioning
-  doc.font(resolvedHeaderFont).fontSize(9);
+    // Draw header text with consistent positioning
+    doc.font("Helvetica-Bold").fontSize(9);
 
-  // Center text vertically in header cells
-  const textY = currentY + headerHeight / 2 - 4;
+    // Vertically position text in header cells
+    const headerTextY = headerY + headerHeight / 2 - 4;
 
-  // Date column
-  doc.text(headerData.donation_date, x + 5, textY, {
-    width: dateColWidth - 10,
-    align: "left",
-  });
+    // Date column
+    doc.text(headerData.donation_date, x + 5, headerTextY, {
+      width: dateColWidth - 10,
+      align: "left",
+    });
 
-  // Description column
-  doc.text(headerData.description, x + dateColWidth + 5, textY, {
-    width: descColWidth - 10,
-    align: "left",
-  });
+    // Description column
+    doc.text(headerData.description, x + dateColWidth + 5, headerTextY, {
+      width: descColWidth - 10,
+      align: "left",
+    });
 
-  // Amount column
-  doc.text(headerData.amount, x + dateColWidth + descColWidth + 5, textY, {
-    width: amountColWidth - 10,
-    align: "right",
-  });
+    // Amount column
+    doc.text(headerData.amount, x + dateColWidth + descColWidth + 5, headerTextY, {
+      width: amountColWidth - 10,
+      align: "right",
+    });
 
-  doc.font("Helvetica");
+    // Reset font
+    doc.font("Helvetica");
 
-  // Draw border around header
-  doc.lineWidth(0.5).rect(x, currentY, totalWidth, headerHeight).stroke();
+    // Draw border around header
+    doc.lineWidth(0.5).rect(x, headerY, totalWidth, headerHeight).stroke();
 
-  // Draw vertical lines for columns
-  doc
-    .moveTo(x + dateColWidth, currentY)
-    .lineTo(x + dateColWidth, currentY + headerHeight)
-    .stroke();
+    // Draw vertical lines for columns
+    doc
+      .moveTo(x + dateColWidth, headerY)
+      .lineTo(x + dateColWidth, headerY + headerHeight)
+      .stroke();
 
-  doc
-    .moveTo(x + dateColWidth + descColWidth, currentY)
-    .lineTo(x + dateColWidth + descColWidth, currentY + headerHeight)
-    .stroke();
+    doc
+      .moveTo(x + dateColWidth + descColWidth, headerY)
+      .lineTo(x + dateColWidth + descColWidth, headerY + headerHeight)
+      .stroke();
 
-  // Move position down after header
-  currentY += headerHeight;
+    // Return y after header
+    return headerY + headerHeight;
+  };
+
+  // Draw header for first page
+  currentY = drawHeader(currentY);
 
   // Process data rows
   for (const row of bodyData) {
@@ -931,46 +915,29 @@ const createTableWithSeparateHeader = (
     // Ensure minimum row height (25 pixels) or more if needed
     const rowHeight = Math.max(25, descriptionHeight + 10);
 
-    doc.font("Helvetica").fontSize(9);
+    // Page break handling: if this row doesn't fit, add page and redraw header
+    const pageBottomLimit = doc.page.height - bottomMargin;
+    if (currentY + rowHeight > pageBottomLimit) {
+      doc.addPage();
+      // Start new table section on the new page
+      currentY = drawHeader(topMargin);
+    }
 
-    // Date column (always Latin)
+    // Draw cell content with consistent positioning
+    doc.fontSize(9);
+
+    // Date column (vertically aligned to top with padding)
     doc.text(row.donation_date, x + 5, currentY + 5, {
       width: dateColWidth - 10,
     });
 
-    // Description column (may contain non-Latin text like Urdu names)
-    if (unicodeFont && hasNonLatinChars(row.description)) {
-      const segments = splitByScript(String(row.description));
-      const lastIdx = segments.length - 1;
+    // Description column
+    doc.text(row.description, x + dateColWidth + 5, currentY + 5, {
+      width: descColWidth - 10,
+    });
 
-      for (let si = 0; si <= lastIdx; si++) {
-        const seg = segments[si];
-        doc.font(seg.isLatin ? "Helvetica" : unicodeFont);
-
-        if (si === 0 && lastIdx > 0) {
-          doc.text(seg.text, x + dateColWidth + 5, currentY + 5, {
-            width: descColWidth - 10,
-            continued: true,
-          });
-        } else if (si === 0 && lastIdx === 0) {
-          doc.text(seg.text, x + dateColWidth + 5, currentY + 5, {
-            width: descColWidth - 10,
-          });
-        } else if (si === lastIdx) {
-          doc.text(seg.text);
-        } else {
-          doc.text(seg.text, { continued: true });
-        }
-      }
-      doc.font("Helvetica");
-    } else {
-      doc.text(row.description, x + dateColWidth + 5, currentY + 5, {
-        width: descColWidth - 10,
-      });
-    }
-
-    // Amount column (always Latin)
-    doc.font("Helvetica").text(row.amount, x + dateColWidth + descColWidth + 5, currentY + 5, {
+    // Amount column
+    doc.text(row.amount, x + dateColWidth + descColWidth + 5, currentY + 5, {
       width: amountColWidth - 10,
       align: "right",
     });
