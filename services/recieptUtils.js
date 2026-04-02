@@ -302,278 +302,339 @@ const generateStatementPDF = async (statement, userEmail) => {
 
   const filePath = path.join(uploadsDir, fileName);
 
-  // Create a new PDF document
   const doc = new PDFDocument({ margin: 50 });
-
-  // Pipe the PDF to the file
   const stream = fs.createWriteStream(filePath);
   doc.pipe(stream);
 
-  // Add logos to match receipt styling
+  const marginLeft = 50;
+  const marginRight = 50;
+  const pageWidth = doc.page?.width || 595;
+  const contentWidth = pageWidth - marginLeft - marginRight;
+
+  // Logos
   const logoPath = path.join(__dirname, "../public/images/logo.png");
-  const taxLogoPath = path.join(__dirname, "../public/images/tax-deductible.png");
+  const taxLogoPath = path.join(
+    __dirname,
+    "../public/images/tax-deductible.png"
+  );
+  const leftLogoX = marginLeft;
+  const leftLogoY = 18;
+  const leftLogoWidth = 62;
+  const leftLogoHeight = 45;
+  const rightLogoY = 18;
+  const rightLogoWidth = 90;
+  const rightLogoHeight = 45;
+
   if (fs.existsSync(logoPath)) {
-    doc.image(logoPath, 50, 45, { width: 100 });
+    // Move logo up to avoid overlapping the header title.
+    doc.image(logoPath, leftLogoX, leftLogoY, {
+      width: leftLogoWidth,
+      height: leftLogoHeight,
+    });
   }
   if (fs.existsSync(taxLogoPath)) {
-    doc.image(taxLogoPath, 450, 45, { width: 100, height: 50 });
-  }
-
-  // Ensure header starts below the logos
-  doc.y = 120;
-
-  // Add header
-  doc.fontSize(24)
-     .font("Helvetica-Bold")
-     .text("Shahid Afridi Foundation", { align: "center" });
-  
-  doc.moveDown(0.5);
-  doc.fontSize(18)
-     .font("Helvetica")
-     .text("Financial Statement", { align: "center" });
-  
-  doc.moveDown(0.5);
-  doc.fontSize(14)
-     .text(`Financial Year: ${statement.financialYear}`, { align: "center" });
-
-  doc.moveDown(1);
-
-  // Add user information
-  doc.fontSize(12)
-     .font("Helvetica-Bold")
-     .text("Donor Information:");
-  
-  doc.fontSize(10)
-     .font("Helvetica")
-     .text(`Name: ${statement.user.name}`);
-  doc.text(`Email: ${statement.user.email}`);
-  doc.text(`Statement ID: ${statement.statementId}`);
-  doc.text(`Generated: ${new Date(statement.generatedAt).toLocaleDateString()}`);
-
-  doc.moveDown(1);
-
-  // Add period information
-  doc.fontSize(12)
-     .font("Helvetica-Bold")
-     .text("Statement Period:");
-  
-  doc.fontSize(10)
-     .font("Helvetica")
-     .text(`From: ${new Date(statement.period.startDate).toLocaleDateString()}`);
-  doc.text(`To: ${new Date(statement.period.endDate).toLocaleDateString()}`);
-
-  doc.moveDown(1);
-
-  // Add summary
-  doc.fontSize(14)
-     .font("Helvetica-Bold")
-     .text("Summary:", { underline: true });
-
-  doc.moveDown(0.5);
-  doc.fontSize(10)
-     .font("Helvetica")
-     .text(`Total Donations: ${statement.summary.totalDonations}`);
-  doc.text(`Total Amount: $${statement.summary.totalAmount.toFixed(2)}`);
-  doc.text(`One-Time Payments: $${statement.summary.totalOneTimePayments.toFixed(2)}`);
-  doc.text(`Recurring Payments: $${statement.summary.totalRecurringPayments.toFixed(2)}`);
-  doc.text(`Installment Payments: $${statement.summary.totalInstallmentPayments.toFixed(2)}`);
-  doc.text(`P2P Donations: $${statement.summary.totalP2PAmount.toFixed(2)} (${statement.summary.totalP2PDonations} donations)`);
-
-  doc.moveDown(1);
-
-  // Add payment methods breakdown
-  if (Object.keys(statement.paymentMethods).length > 0) {
-    doc.fontSize(12)
-       .font("Helvetica-Bold")
-       .text("Payment Methods Breakdown:", { underline: true });
-
-    doc.moveDown(0.5);
-    doc.fontSize(10)
-       .font("Helvetica");
-    
-    Object.entries(statement.paymentMethods).forEach(([method, amount]) => {
-      doc.text(`${method.charAt(0).toUpperCase() + method.slice(1)}: $${amount.toFixed(2)}`);
+    doc.image(taxLogoPath, pageWidth - marginRight - rightLogoWidth, rightLogoY, {
+      width: rightLogoWidth,
+      height: rightLogoHeight,
     });
-
-    doc.moveDown(1);
   }
 
-  // Donation table (tabular format like receipt PDFs)
+  const [startYear, endYear] = (statement.financialYear || "").split("-");
+
+  // Header (match frontend look)
+  // Header top baseline (tuned to sit below logos).
+  const titleY = leftLogoY + leftLogoHeight + 12;
+  let y = titleY;
+  doc.fontSize(16).font("Helvetica-Bold").fillColor("#000000");
+  doc.text("Shahid Afridi Foundation Ltd", marginLeft, y, {
+    width: contentWidth,
+    align: "left",
+  });
+  y += 18;
+
+  doc.fontSize(12).font("Helvetica").fillColor("#000000");
+  doc.text("Annual Donation Statement", marginLeft, y, {
+    width: contentWidth,
+    align: "left",
+  });
+  y += 16;
+
+  doc.fontSize(10).font("Helvetica").fillColor("#000000");
+  doc.text(
+    `Financial Year: July 1, ${startYear} - June 30, ${endYear}`,
+    marginLeft,
+    y,
+    { width: contentWidth, align: "left" }
+  );
+
+  // Right-side info (ABN / Date issued / Reference)
+  const rightX = marginLeft;
+  const rightWidth = contentWidth;
+  const dateIssued = formatDate(new Date());
+  doc.fontSize(10).font("Helvetica").fillColor("#000000");
+  doc.text("ABN: 97 642 657 010", rightX, titleY, {
+    width: rightWidth,
+    align: "right",
+  });
+  doc.text(`Date Issued: ${dateIssued}`, rightX, titleY + 12, {
+    width: rightWidth,
+    align: "right",
+  });
+  if (statement.statementId) {
+    doc.text(`Reference: ${statement.statementId}`, rightX, titleY + 24, {
+      width: rightWidth,
+      align: "right",
+    });
+  }
+
+  // Donor info
+  y += 26;
+  doc.fontSize(10).font("Helvetica").fillColor("#000000");
+  doc.text(`Name: ${statement.user?.name || "N/A"}`, marginLeft, y, {
+    width: contentWidth,
+    align: "left",
+  });
+  y += 12;
+  doc.text(`Email: ${statement.user?.email || "N/A"}`, marginLeft, y, {
+    width: contentWidth,
+    align: "left",
+  });
+
+  // Build table rows (6 columns)
   const tableRows = [];
-  const pushRow = (dateValue, description, amountValue) => {
-    if (!dateValue) return;
-    const safeAmount = Number(amountValue || 0);
-    const safeDesc = (description || "").toString().trim() || "Donation";
+  const pushRow = ({
+    donationDate,
+    donationId,
+    description,
+    paymentType,
+    donationType,
+    amount,
+  }) => {
+    if (!donationDate) return;
     tableRows.push({
-      donation_date: formatDate(dateValue),
-      description: safeDesc,
-      amount: `$${safeAmount.toFixed(2)}`
+      donation_date: formatDate(donationDate),
+      donation_id: (donationId || "").toString(),
+      description: (description || "").toString(),
+      payment_type: (paymentType || "").toString(),
+      donation_type: (donationType || "").toString(),
+      amount: `$${Number(amount || 0).toFixed(2)}`,
     });
   };
 
-  // One-time payments: use paymentHistory (each successful charge)
-  statement.breakdown.oneTimePayments.forEach((payment) => {
-    const donationTitle =
-      payment.items?.[0]?.title || payment.donationType || "Sadaqah";
+  const donationTitleFromItems = (items) => {
+    const first = Array.isArray(items) && items.length ? items[0] : null;
+    return first?.title || first?.description || "Donation";
+  };
 
-    if (Array.isArray(payment.paymentHistory) && payment.paymentHistory.length) {
-      payment.paymentHistory.forEach((hist) => {
-        pushRow(hist.date, donationTitle, hist.amount);
-      });
+  const donationTypeFromPayment = (payment) => {
+    const fromItems =
+      payment?.items && payment.items.length
+        ? payment.items[0]?.donationType || payment.items[0]?.donationTypeName
+        : null;
+    return payment?.donationType || fromItems || "Sadaqah";
+  };
+
+  // One-time
+  (statement.breakdown?.oneTimePayments || []).forEach((payment) => {
+    const donationId = payment.donationId || "";
+    const description = donationTitleFromItems(payment.items) || "";
+    const donationType = donationTypeFromPayment(payment);
+    const hist = payment.paymentHistory || [];
+    if (hist.length) {
+      hist.forEach((h) =>
+        pushRow({
+          donationDate: h.date,
+          donationId,
+          description,
+          paymentType: "One-time",
+          donationType,
+          amount: h.amount,
+        })
+      );
     } else {
-      pushRow(payment.createdAt, donationTitle, payment.actualPayments);
-    }
-  });
-
-  // Recurring payments: use paymentHistory (each successful invoice/payment)
-  statement.breakdown.recurringPayments.forEach((payment) => {
-    const donationTitle =
-      payment.items?.[0]?.title || payment.donationType || "Sadaqah";
-
-    if (Array.isArray(payment.paymentHistory) && payment.paymentHistory.length) {
-      payment.paymentHistory.forEach((hist) => {
-        pushRow(hist.date, donationTitle, hist.amount);
+      pushRow({
+        donationDate: payment.createdAt,
+        donationId,
+        description,
+        paymentType: "One-time",
+        donationType,
+        amount: payment.actualPayments,
       });
-    } else {
-      pushRow(payment.createdAt, donationTitle, payment.actualPayments);
     }
   });
 
-  // Installments: use paymentHistory (each completed installment)
-  statement.breakdown.installmentPayments.forEach((payment) => {
-    const donationTitle =
-      payment.items?.[0]?.title || payment.donationType || "Sadaqah";
-
-    if (Array.isArray(payment.paymentHistory) && payment.paymentHistory.length) {
-      payment.paymentHistory.forEach((hist) => {
-        const installmentLabel =
-          hist.installmentNumber != null ? ` - Installment ${hist.installmentNumber}` : "";
-        pushRow(hist.date, `${donationTitle}${installmentLabel}`, hist.amount);
+  // Recurring
+  (statement.breakdown?.recurringPayments || []).forEach((payment) => {
+    const donationId = payment.donationId || "";
+    const description = donationTitleFromItems(payment.items) || "";
+    const donationType = donationTypeFromPayment(payment);
+    const hist = payment.paymentHistory || [];
+    if (hist.length) {
+      hist.forEach((h) =>
+        pushRow({
+          donationDate: h.date,
+          donationId,
+          description,
+          paymentType: "Recurring",
+          donationType,
+          amount: h.amount,
+        })
+      );
+    } else {
+      pushRow({
+        donationDate: payment.createdAt,
+        donationId,
+        description,
+        paymentType: "Recurring",
+        donationType,
+        amount: payment.actualPayments,
       });
+    }
+  });
+
+  // Installments
+  (statement.breakdown?.installmentPayments || []).forEach((payment) => {
+    const donationId = payment.donationId || "";
+    const donationType = donationTypeFromPayment(payment);
+    const baseTitle = donationTitleFromItems(payment.items) || "";
+    const hist = payment.paymentHistory || [];
+    if (hist.length) {
+      hist.forEach((h) =>
+        pushRow({
+          donationDate: h.date,
+          donationId,
+          description:
+            h.installmentNumber != null
+              ? `${baseTitle} - Installment ${h.installmentNumber}`
+              : baseTitle,
+          paymentType: "Installment",
+          donationType,
+          amount: h.amount,
+        })
+      );
     } else {
-      pushRow(payment.createdAt, donationTitle, payment.actualPayments);
+      pushRow({
+        donationDate: payment.createdAt,
+        donationId,
+        description: baseTitle,
+        paymentType: "Installment",
+        donationType,
+        amount: payment.actualPayments,
+      });
     }
   });
 
-  // P2P donations
-  statement.breakdown.p2pDonations.forEach((donation) => {
-    pushRow(
-      donation.createdAt,
-      donation.campaignTitle || "GoFundMe Campaign",
-      donation.amount
-    );
-  });
-
-  doc.fontSize(14)
-    .font("Helvetica-Bold")
-    .text("Donation History:", { underline: true });
-  doc.moveDown(0.5);
-
-  if (tableRows.length > 0) {
-    const headerData = {
-      donation_date: "Donation Date",
-      description: "Description",
-      amount: "Donation Amount",
-    };
-
-    // Draw the table starting from the current cursor Y
-    const tableY = createTableWithSeparateHeader(doc, headerData, tableRows, 50, doc.y);
-    doc.y = tableY + 10;
-    // Reset x so subsequent sections don't inherit table's last X position.
-    doc.x = 50;
-  } else {
-    doc.fontSize(10).font("Helvetica").text("No donations found for this financial year.");
-    doc.moveDown(1);
-  }
-
-  // Add monthly summary
-  doc.fontSize(14)
-     .font("Helvetica-Bold")
-     .text("Monthly Summary:", { underline: true });
-
-  doc.moveDown(0.5);
-  doc.fontSize(9)
-     .font("Helvetica");
-
-  // Ensure monthly summary starts from left margin
-  doc.x = 50;
-
-  Object.entries(statement.monthlySummary).forEach(([month, data]) => {
-    if (data.totalAmount > 0) {
-      const monthName = new Date(month + '-01').toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
-      doc.text(`${monthName}:`);
-      doc.text(`  One-Time: $${data.oneTimePayments.toFixed(2)}`);
-      doc.text(`  Recurring: $${data.recurringPayments.toFixed(2)}`);
-      doc.text(`  Installments: $${data.installmentPayments.toFixed(2)}`);
-      doc.text(`  P2P: $${data.p2pDonations.toFixed(2)}`);
-      doc.text(`  Total: $${data.totalAmount.toFixed(2)}`);
-      doc.moveDown(0.3);
-    }
-  });
-
-  // Receipt-like footer: draw with absolute Y positions so it never splits to another page.
-  const pageHeight = doc.page?.height || 842; // A4-ish fallback
-  const pageWidth = doc.page?.width || 595;
-  const marginX = 50;
-  const footerWidth = pageWidth - marginX * 2;
-
-  const taxHeadingY = pageHeight - 155;
-  const taxLine1Y = taxHeadingY + 12;
-  const taxLine2Y = taxLine1Y + 10;
-  const separatorY = taxLine2Y + 26;
-  const fundraisingTitleY = separatorY + 18;
-  const fundraisingNumbersY = fundraisingTitleY + 10;
-  const footerY = pageHeight - 35;
-
-  // Tax Information heading
-  doc.fontSize(8).font("Helvetica").fillColor("#008000").text("Tax Information", marginX, taxHeadingY, {
-    width: footerWidth,
-    align: "center",
-  });
-
-  // Tax information lines
-  doc.fontSize(8).fillColor("#000000").font("Helvetica")
-    .text("All donations are tax-deductible to the extent allowed by law.", marginX, taxLine1Y, {
-      width: footerWidth,
-      align: "center",
+  // P2P
+  (statement.breakdown?.p2pDonations || []).forEach((donation) => {
+    pushRow({
+      donationDate: donation.createdAt,
+      donationId: donation.donationId || "",
+      description: `P2P Campaign: ${donation.campaignTitle || "Campaign"}`,
+      paymentType: "P2P Campaign",
+      donationType: donation.donationType || "P2P",
+      amount: donation.amount,
     });
-
-  doc.fontSize(8).fillColor("#000000").font("Helvetica")
-    .text("This receipt is for tax purposes only. Please retain for your records.", marginX, taxLine2Y, {
-      width: footerWidth,
-      align: "center",
-    });
-
-  // Separator line
-  doc.save();
-  doc.strokeColor("#C8C8C8").lineWidth(0.5);
-  const lineX1 = marginX + 40;
-  const lineX2 = pageWidth - (marginX + 40);
-  doc.moveTo(lineX1, separatorY).lineTo(lineX2, separatorY).stroke();
-  doc.restore();
-
-  // Fundraising Authority
-  doc.fontSize(8).fillColor("#646464").font("Helvetica").text("Fundraising Authority", marginX, fundraisingTitleY, {
-    width: footerWidth,
-    align: "center",
   });
 
-  doc.fontSize(7).fillColor("#646464").font("Helvetica").text(
-    "NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569",
-    marginX,
-    fundraisingNumbersY,
-    { width: footerWidth, align: "center" }
+  // Sort by date asc
+  tableRows.sort(
+    (a, b) => new Date(a.donation_date) - new Date(b.donation_date)
   );
 
-  // Website + contact footer
-  const footerText =
-    "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)";
-  doc.fontSize(8).fillColor("#000000").font("Helvetica").text(footerText, marginX, footerY, {
-    width: footerWidth,
+  const tableHeader = {
+    donation_date: "Donation Date",
+    donation_id: "Donation ID",
+    description: "Description",
+    payment_type: "Payment Type",
+    donation_type: "Donation Type",
+    amount: "Amount",
+  };
+
+  const tableStartY = y + 18;
+  const lastTableY = createAnnualStatementTable(
+    doc,
+    tableHeader,
+    tableRows,
+    marginLeft,
+    tableStartY
+  );
+
+  // Total amount (right)
+  const totalAmount = Number(statement.summary?.totalAmount || 0);
+  const totalText = `Total Amount: $${totalAmount.toFixed(2)}`;
+
+  // Place total + tax/footer near the bottom using fixed Y coordinates.
+  // This prevents overlap with the last table rows (what you’re seeing).
+  const pageHeight = doc.page?.height || 842;
+  const bottomPadding = 35;
+  const footerBlockHeight = 105; // tax heading + body + authority + site footer
+  const footerStartY = pageHeight - bottomPadding - footerBlockHeight;
+  const totalY = footerStartY - 18;
+
+  // If the table ended too low, put the footer on a new page (no overlap).
+  const minSpacingAfterTable = 10;
+  if (lastTableY + minSpacingAfterTable > totalY) {
+    doc.addPage();
+  }
+
+  const pageHeight2 = doc.page?.height || 842;
+  const footerStartY2 = pageHeight2 - bottomPadding - footerBlockHeight;
+  const totalY2 = footerStartY2 - 18;
+
+  doc.fontSize(10).font("Helvetica-Bold").fillColor("#000000");
+  doc.text(totalText, marginLeft, totalY2, { width: contentWidth, align: "right" });
+
+  // Tax footer (match frontend)
+  doc.fontSize(9).font("Helvetica-Bold").fillColor("#008000");
+  doc.text("Tax Information", marginLeft, footerStartY2, {
+    width: contentWidth,
     align: "center",
   });
 
-  // Finalize the PDF and end the stream
+  doc.fontSize(8).font("Helvetica").fillColor("#000000");
+  const line1Y = footerStartY2 + 12;
+  doc.text(
+    "All donations are tax-deductible to the extent allowed by law.",
+    marginLeft,
+    line1Y,
+    { width: contentWidth, align: "center" }
+  );
+
+  const line2Y = line1Y + 10;
+  doc.text(
+    "This statement is for tax purposes only. Please retain for your records.",
+    marginLeft,
+    line2Y,
+    { width: contentWidth, align: "center" }
+  );
+
+  const fundraisingY = line2Y + 18;
+  doc.text(
+    "Fundraising Authority",
+    marginLeft,
+    fundraisingY,
+    { width: contentWidth, align: "center" }
+  );
+
+  const fundraisingNumsY = fundraisingY + 10;
+  doc.fontSize(7).fillColor("#646464").font("Helvetica");
+  doc.text(
+    " NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569",
+    marginLeft,
+    fundraisingNumsY,
+    { width: contentWidth, align: "center" }
+  );
+
+  doc.fontSize(8).fillColor("#000000").font("Helvetica");
+  const websiteY = pageHeight2 - bottomPadding;
+  doc.text(
+    "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)",
+    marginLeft,
+    websiteY,
+    { width: contentWidth, align: "center" }
+  );
+
+  // Finalize
   doc.end();
 
   return new Promise((resolve, reject) => {
@@ -582,6 +643,183 @@ const generateStatementPDF = async (statement, userEmail) => {
     });
     stream.on("error", reject);
   });
+};
+
+/**
+ * Annual donor financial statement table (6 columns)
+ * Designed to match the frontend jsPDF/autoTable layout: multi-line description with proper borders.
+ */
+const createAnnualStatementTable = (doc, headerData, bodyData, x, y) => {
+  const pageWidth = doc.page?.width || 595;
+  const contentWidth = pageWidth - x * 2;
+
+  // 6 columns total width = contentWidth
+  const colWidths = {
+    donation_date: contentWidth * 0.13,
+    donation_id: contentWidth * 0.13,
+    description: contentWidth * 0.30,
+    payment_type: contentWidth * 0.14,
+    donation_type: contentWidth * 0.12,
+    amount: contentWidth * 0.18,
+  };
+
+  const totalWidth =
+    colWidths.donation_date +
+    colWidths.donation_id +
+    colWidths.description +
+    colWidths.payment_type +
+    colWidths.donation_type +
+    colWidths.amount;
+
+  // Column x positions
+  const colX = {
+    donation_date: x,
+    donation_id: x + colWidths.donation_date,
+    description:
+      x + colWidths.donation_date + colWidths.donation_id,
+    payment_type:
+      x + colWidths.donation_date + colWidths.donation_id + colWidths.description,
+    donation_type:
+      x + colWidths.donation_date + colWidths.donation_id + colWidths.description + colWidths.payment_type,
+    amount:
+      x +
+      colWidths.donation_date +
+      colWidths.donation_id +
+      colWidths.description +
+      colWidths.payment_type +
+      colWidths.donation_type,
+  };
+
+  const headerHeight = 18;
+  const minRowHeight = 16;
+
+  const drawHeader = (headerY) => {
+    doc.fillColor("#f0f0f0").rect(x, headerY, totalWidth, headerHeight).fill();
+    doc.fillColor("#000000");
+    doc.font("Helvetica-Bold").fontSize(8);
+
+    const textY = headerY + headerHeight / 2 - 4;
+    doc.text(headerData.donation_date, colX.donation_date + 3, textY, {
+      width: colWidths.donation_date - 6,
+    });
+    doc.text(headerData.donation_id, colX.donation_id + 3, textY, {
+      width: colWidths.donation_id - 6,
+    });
+    doc.text(headerData.description, colX.description + 3, textY, {
+      width: colWidths.description - 6,
+    });
+    doc.text(headerData.payment_type, colX.payment_type + 3, textY, {
+      width: colWidths.payment_type - 6,
+    });
+    doc.text(headerData.donation_type, colX.donation_type + 3, textY, {
+      width: colWidths.donation_type - 6,
+    });
+    doc.text(headerData.amount, colX.amount + 3, textY, {
+      width: colWidths.amount - 6,
+      align: "right",
+    });
+
+    // Borders
+    doc.lineWidth(0.5).strokeColor("#000000");
+    doc.rect(x, headerY, totalWidth, headerHeight).stroke();
+
+    // Vertical dividers
+    const lines = [
+      x + colWidths.donation_date,
+      x + colWidths.donation_date + colWidths.donation_id,
+      x + colWidths.donation_date + colWidths.donation_id + colWidths.description,
+      x +
+        colWidths.donation_date +
+        colWidths.donation_id +
+        colWidths.description +
+        colWidths.payment_type,
+      x +
+        colWidths.donation_date +
+        colWidths.donation_id +
+        colWidths.description +
+        colWidths.payment_type +
+        colWidths.donation_type,
+    ];
+    lines.forEach((lx) => {
+      doc.moveTo(lx, headerY).lineTo(lx, headerY + headerHeight).stroke();
+    });
+
+    return headerY + headerHeight;
+  };
+
+  let currentY = y;
+  currentY = drawHeader(currentY);
+
+  const bottomLimit =
+    (doc.page?.height || 842) - doc.page.margins.bottom;
+
+  for (const row of bodyData) {
+    // Wrap height for description
+    doc.font("Helvetica").fontSize(8);
+    const descHeight = doc.heightOfString(row.description || "", {
+      width: colWidths.description - 6,
+    });
+    const rowHeight = Math.max(minRowHeight, descHeight + 6);
+
+    if (currentY + rowHeight > bottomLimit) {
+      doc.addPage();
+      currentY = doc.page.margins.top;
+      currentY = drawHeader(currentY);
+    }
+
+    // Cell borders
+    doc.lineWidth(0.5).strokeColor("#000000");
+    doc.rect(x, currentY, totalWidth, rowHeight).stroke();
+
+    // Vertical dividers
+    const dividerXs = [
+      x + colWidths.donation_date,
+      x + colWidths.donation_date + colWidths.donation_id,
+      x + colWidths.donation_date + colWidths.donation_id + colWidths.description,
+      x +
+        colWidths.donation_date +
+        colWidths.donation_id +
+        colWidths.description +
+        colWidths.payment_type,
+      x +
+        colWidths.donation_date +
+        colWidths.donation_id +
+        colWidths.description +
+        colWidths.payment_type +
+        colWidths.donation_type,
+    ];
+    dividerXs.forEach((lx) => {
+      doc.moveTo(lx, currentY).lineTo(lx, currentY + rowHeight).stroke();
+    });
+
+    const textXPad = 3;
+    const textYPad = 4;
+
+    doc.font("Helvetica").fontSize(8);
+    doc.text(row.donation_date || "", colX.donation_date + textXPad, currentY + textYPad, {
+      width: colWidths.donation_date - 6,
+    });
+    doc.text(row.donation_id || "", colX.donation_id + textXPad, currentY + textYPad, {
+      width: colWidths.donation_id - 6,
+    });
+    doc.text(row.description || "", colX.description + textXPad, currentY + textYPad, {
+      width: colWidths.description - 6,
+    });
+    doc.text(row.payment_type || "", colX.payment_type + textXPad, currentY + textYPad, {
+      width: colWidths.payment_type - 6,
+    });
+    doc.text(row.donation_type || "", colX.donation_type + textXPad, currentY + textYPad, {
+      width: colWidths.donation_type - 6,
+    });
+    doc.text(row.amount || "", colX.amount + textXPad, currentY + textYPad, {
+      width: colWidths.amount - 6,
+      align: "right",
+    });
+
+    currentY += rowHeight;
+  }
+
+  return currentY;
 };
 
 /**
