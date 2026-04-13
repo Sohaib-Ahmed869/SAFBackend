@@ -559,31 +559,31 @@ const generateStatementPDF = async (statement, userEmail) => {
     tableStartY
   );
 
-  // Total amount + tax/footer should sit directly under the table and stay together.
+  // Total amount should sit directly under table.
+  // Tax/authority/contact must behave like a real page footer (bottom anchored).
   const totalAmount = Number(statement.summary?.totalAmount || 0);
   const totalText = `Total Amount: $${totalAmount.toFixed(2)}`;
+  const totalY = lastTableY + 10;
+  doc.fontSize(10).font("Helvetica-Bold").fillColor("#000000");
+  doc.text(totalText, marginLeft, totalY, { width: contentWidth, align: "right" });
 
-  const pageHeight = doc.page?.height || 842;
-  const pageBottomLimit = pageHeight - (doc.page?.margins?.bottom ?? 50);
+  // Footer block dimensions/positions (always anchored near page bottom).
+  let pageHeight = doc.page?.height || 842;
+  let bottomPadding = 35;
+  const footerBlockHeight = 78; // tax info + authority + contact
+  let footerStartY = pageHeight - bottomPadding - footerBlockHeight;
 
-  // Compact grouped block height estimate (total + tax + authority + contact line)
-  const blockHeightEstimate = 92;
-  const startY = lastTableY + 10;
-
-  // Ensure the whole block fits; otherwise move it together to the next page.
-  const movedToNextPage = startY + blockHeightEstimate > pageBottomLimit;
-  if (movedToNextPage) {
+  // If total text is too close to footer area on current page,
+  // move only the footer to next page so footer remains at bottom.
+  const totalBottomY = totalY + 12;
+  const minGapAboveFooter = 8;
+  if (totalBottomY + minGapAboveFooter > footerStartY) {
     doc.addPage();
+    pageHeight = doc.page?.height || 842;
+    footerStartY = pageHeight - bottomPadding - footerBlockHeight;
   }
 
-  const currentStartY = movedToNextPage
-    ? doc.page?.margins?.top ?? 50
-    : startY;
-  let currentY = currentStartY;
-
-  doc.fontSize(10).font("Helvetica-Bold").fillColor("#000000");
-  doc.text(totalText, marginLeft, currentY, { width: contentWidth, align: "right" });
-  currentY += 14;
+  let currentY = footerStartY;
 
   doc.fontSize(9).font("Helvetica-Bold").fillColor("#008000");
   doc.text("Tax Information", marginLeft, currentY, {
@@ -607,7 +607,7 @@ const generateStatementPDF = async (statement, userEmail) => {
     currentY,
     { width: contentWidth, align: "center" }
   );
-  currentY += 14;
+  currentY += 13;
 
   doc.fontSize(8).fillColor("#000000").font("Helvetica");
   doc.text("Fundraising Authority", marginLeft, currentY, {
@@ -623,13 +623,13 @@ const generateStatementPDF = async (statement, userEmail) => {
     currentY,
     { width: contentWidth, align: "center" }
   );
-  currentY += 12;
 
+  const websiteY = pageHeight - bottomPadding;
   doc.fontSize(8).fillColor("#000000").font("Helvetica");
   doc.text(
     "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)",
     marginLeft,
-    currentY,
+    websiteY,
     { width: contentWidth, align: "center" }
   );
 
