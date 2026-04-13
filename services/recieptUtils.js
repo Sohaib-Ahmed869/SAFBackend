@@ -559,78 +559,77 @@ const generateStatementPDF = async (statement, userEmail) => {
     tableStartY
   );
 
-  // Total amount (right)
+  // Total amount + tax/footer should sit directly under the table and stay together.
   const totalAmount = Number(statement.summary?.totalAmount || 0);
   const totalText = `Total Amount: $${totalAmount.toFixed(2)}`;
 
-  // Place total + tax/footer near the bottom using fixed Y coordinates.
-  // This prevents overlap with the last table rows (what you’re seeing).
   const pageHeight = doc.page?.height || 842;
-  const bottomPadding = 35;
-  const footerBlockHeight = 105; // tax heading + body + authority + site footer
-  const footerStartY = pageHeight - bottomPadding - footerBlockHeight;
-  const totalY = footerStartY - 18;
+  const pageBottomLimit = pageHeight - (doc.page?.margins?.bottom ?? 50);
 
-  // If the table ended too low, put the footer on a new page (no overlap).
-  const minSpacingAfterTable = 10;
-  if (lastTableY + minSpacingAfterTable > totalY) {
+  // Compact grouped block height estimate (total + tax + authority + contact line)
+  const blockHeightEstimate = 92;
+  const startY = lastTableY + 10;
+
+  // Ensure the whole block fits; otherwise move it together to the next page.
+  const movedToNextPage = startY + blockHeightEstimate > pageBottomLimit;
+  if (movedToNextPage) {
     doc.addPage();
   }
 
-  const pageHeight2 = doc.page?.height || 842;
-  const footerStartY2 = pageHeight2 - bottomPadding - footerBlockHeight;
-  const totalY2 = footerStartY2 - 18;
+  const currentStartY = movedToNextPage
+    ? doc.page?.margins?.top ?? 50
+    : startY;
+  let currentY = currentStartY;
 
   doc.fontSize(10).font("Helvetica-Bold").fillColor("#000000");
-  doc.text(totalText, marginLeft, totalY2, { width: contentWidth, align: "right" });
+  doc.text(totalText, marginLeft, currentY, { width: contentWidth, align: "right" });
+  currentY += 14;
 
-  // Tax footer (match frontend)
   doc.fontSize(9).font("Helvetica-Bold").fillColor("#008000");
-  doc.text("Tax Information", marginLeft, footerStartY2, {
+  doc.text("Tax Information", marginLeft, currentY, {
     width: contentWidth,
     align: "center",
   });
+  currentY += 11;
 
   doc.fontSize(8).font("Helvetica").fillColor("#000000");
-  const line1Y = footerStartY2 + 12;
   doc.text(
     "All donations are tax-deductible to the extent allowed by law.",
     marginLeft,
-    line1Y,
+    currentY,
     { width: contentWidth, align: "center" }
   );
+  currentY += 10;
 
-  const line2Y = line1Y + 10;
   doc.text(
     "This statement is for tax purposes only. Please retain for your records.",
     marginLeft,
-    line2Y,
+    currentY,
     { width: contentWidth, align: "center" }
   );
+  currentY += 14;
 
-  const fundraisingY = line2Y + 18;
-  doc.text(
-    "Fundraising Authority",
-    marginLeft,
-    fundraisingY,
-    { width: contentWidth, align: "center" }
-  );
+  doc.fontSize(8).fillColor("#000000").font("Helvetica");
+  doc.text("Fundraising Authority", marginLeft, currentY, {
+    width: contentWidth,
+    align: "center",
+  });
+  currentY += 10;
 
-  const fundraisingNumsY = fundraisingY + 10;
   doc.fontSize(7).fillColor("#646464").font("Helvetica");
   doc.text(
     " NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569",
     marginLeft,
-    fundraisingNumsY,
+    currentY,
     { width: contentWidth, align: "center" }
   );
+  currentY += 12;
 
   doc.fontSize(8).fillColor("#000000").font("Helvetica");
-  const websiteY = pageHeight2 - bottomPadding;
   doc.text(
     "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)",
     marginLeft,
-    websiteY,
+    currentY,
     { width: contentWidth, align: "center" }
   );
 

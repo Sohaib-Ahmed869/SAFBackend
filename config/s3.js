@@ -65,6 +65,28 @@ const productUpload = multer({
   },
 });
 
+// Configure multer for Hero Slider uploads
+const heroSliderUpload = multer({
+  storage: multerS3(createUploadConfig("hero-slider")),
+  // Allow multiple hero images in one request
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB per file
+    files: 10,
+  },
+  fileFilter: function (req, file, cb) {
+    const filetypes = /jpeg|jpg|png|gif|webp/;
+    const mimetype = filetypes.test(file.mimetype);
+    const extname = filetypes.test(
+      path.extname(file.originalname).toLowerCase()
+    );
+
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error("Only image files are allowed!"));
+  },
+});
+
 // Helper function to delete objects from S3
 const deleteS3Object = async (key) => {
   const params = {
@@ -86,5 +108,6 @@ module.exports = {
   s3Client, 
   deleteS3Object,
   eventsUpload,
-  productUpload
+  productUpload,
+  heroSliderUpload
 };
