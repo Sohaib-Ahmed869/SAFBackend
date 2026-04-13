@@ -569,8 +569,20 @@ const generateStatementPDF = async (statement, userEmail) => {
 
   // Footer block dimensions/positions (always anchored near page bottom).
   let pageHeight = doc.page?.height || 842;
-  let bottomPadding = 35;
-  const footerBlockHeight = 78; // tax info + authority + contact
+  const bottomPadding = 35;
+  const footerText =
+    "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)";
+
+  // Measure website line height so it never overflows to the next page.
+  doc.fontSize(8).font("Helvetica");
+  const websiteLineHeight = doc.heightOfString(footerText, {
+    width: contentWidth,
+    align: "center",
+  });
+
+  // Space needed above website line (tax + authority lines)
+  const upperFooterHeight = 56;
+  const footerBlockHeight = upperFooterHeight + websiteLineHeight;
   let footerStartY = pageHeight - bottomPadding - footerBlockHeight;
 
   // If total text is too close to footer area on current page,
@@ -624,14 +636,12 @@ const generateStatementPDF = async (statement, userEmail) => {
     { width: contentWidth, align: "center" }
   );
 
-  const websiteY = pageHeight - bottomPadding;
+  const websiteY = pageHeight - bottomPadding - websiteLineHeight;
   doc.fontSize(8).fillColor("#000000").font("Helvetica");
-  doc.text(
-    "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)",
-    marginLeft,
-    websiteY,
-    { width: contentWidth, align: "center" }
-  );
+  doc.text(footerText, marginLeft, websiteY, {
+    width: contentWidth,
+    align: "center",
+  });
 
   // Finalize
   doc.end();
