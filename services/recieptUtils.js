@@ -572,17 +572,41 @@ const generateStatementPDF = async (statement, userEmail) => {
   const bottomPadding = 35;
   const footerText =
     "www.shahidafridifoundation.org.au | info@ShahidAfridiFoundation.org.au | 1300 SAF AUS (1300 723 287)";
+  const authorityText =
+    " NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569";
 
-  // Measure website line height so it never overflows to the next page.
-  doc.fontSize(8).font("Helvetica");
-  const websiteLineHeight = doc.heightOfString(footerText, {
-    width: contentWidth,
-    align: "center",
-  });
+  const getFittedFontSize = (text, startSize, minSize = 6) => {
+    let size = startSize;
+    while (size > minSize) {
+      doc.font("Helvetica").fontSize(size);
+      if (doc.widthOfString(text) <= contentWidth) return size;
+      size -= 0.25;
+    }
+    return minSize;
+  };
 
-  // Space needed above website line (tax + authority lines)
-  const upperFooterHeight = 56;
-  const footerBlockHeight = upperFooterHeight + websiteLineHeight;
+  const drawCenteredSingleLine = (text, y, fontName, fontSize, color = "#000000") => {
+    doc.font(fontName).fontSize(fontSize).fillColor(color);
+    const textWidth = doc.widthOfString(text);
+    const x = marginLeft + Math.max(0, (contentWidth - textWidth) / 2);
+    doc.text(text, x, y, { lineBreak: false });
+  };
+
+  const websiteFontSize = getFittedFontSize(footerText, 8, 6);
+  const authorityFontSize = getFittedFontSize(authorityText, 7, 6);
+  const websiteLineHeight = doc.currentLineHeight(true);
+  const authorityLineHeight = authorityFontSize + 1;
+
+  const footerBlockHeight =
+    10 + // Tax Information
+    10 + // All donations line
+    10 + // statement line
+    13 + // gap before authority heading
+    9 + // Fundraising Authority
+    10 + // authority numbers
+    authorityLineHeight +
+    12 + // gap before website
+    websiteLineHeight;
   let footerStartY = pageHeight - bottomPadding - footerBlockHeight;
 
   // If total text is too close to footer area on current page,
@@ -596,52 +620,40 @@ const generateStatementPDF = async (statement, userEmail) => {
   }
 
   let currentY = footerStartY;
+  drawCenteredSingleLine("Tax Information", currentY, "Helvetica-Bold", 9, "#008000");
+  currentY += 10;
 
-  doc.fontSize(9).font("Helvetica-Bold").fillColor("#008000");
-  doc.text("Tax Information", marginLeft, currentY, {
-    width: contentWidth,
-    align: "center",
-  });
-  currentY += 11;
-
-  doc.fontSize(8).font("Helvetica").fillColor("#000000");
-  doc.text(
+  drawCenteredSingleLine(
     "All donations are tax-deductible to the extent allowed by law.",
-    marginLeft,
     currentY,
-    { width: contentWidth, align: "center" }
+    "Helvetica",
+    8,
+    "#000000"
   );
   currentY += 10;
 
-  doc.text(
+  drawCenteredSingleLine(
     "This statement is for tax purposes only. Please retain for your records.",
-    marginLeft,
     currentY,
-    { width: contentWidth, align: "center" }
+    "Helvetica",
+    8,
+    "#000000"
   );
   currentY += 13;
 
-  doc.fontSize(8).fillColor("#000000").font("Helvetica");
-  doc.text("Fundraising Authority", marginLeft, currentY, {
-    width: contentWidth,
-    align: "center",
-  });
+  drawCenteredSingleLine("Fundraising Authority", currentY, "Helvetica", 8, "#000000");
   currentY += 10;
 
-  doc.fontSize(7).fillColor("#646464").font("Helvetica");
-  doc.text(
-    " NSW: CFN26181 | VIC: FR0016494 | WA: CC23981 | QLD: CH4900307 | SA: CCP4771 | TAS: C/11569",
-    marginLeft,
+  drawCenteredSingleLine(
+    authorityText,
     currentY,
-    { width: contentWidth, align: "center" }
+    "Helvetica",
+    authorityFontSize,
+    "#646464"
   );
 
   const websiteY = pageHeight - bottomPadding - websiteLineHeight;
-  doc.fontSize(8).fillColor("#000000").font("Helvetica");
-  doc.text(footerText, marginLeft, websiteY, {
-    width: contentWidth,
-    align: "center",
-  });
+  drawCenteredSingleLine(footerText, websiteY, "Helvetica", websiteFontSize, "#000000");
 
   // Finalize
   doc.end();
