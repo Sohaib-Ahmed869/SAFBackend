@@ -1,5 +1,7 @@
 require("dotenv").config({ override: true });
 
+const dns = require("dns");
+dns.setServers(["1.1.1.1", "1.0.0.1", "8.8.8.8"]);
 
 const express = require("express");
 const cors = require("cors");

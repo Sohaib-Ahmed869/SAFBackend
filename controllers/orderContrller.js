@@ -2815,10 +2815,79 @@ exports.generateStatement = async (req, res) => {
       } else if (order.paymentType === 'recurring' && order.recurringDetails) {
         // Calculate recurring payments in the financial year
         const recurringPayments = order.recurringDetails.paymentHistory || [];
-        const yearPayments = recurringPayments.filter(payment => 
+        let yearPayments = recurringPayments.filter(payment =>
           payment.date >= startDate && payment.date <= endDate && payment.status === 'succeeded'
         );
-        
+
+        // Recovery: when local paymentHistory has no entries in this FY but Stripe
+        // has paid invoices for the linked subscription, pull and persist them.
+        // Idempotent (deduped on invoiceId); only runs when local data is missing.
+        if (
+          yearPayments.length === 0 &&
+          order.transactionDetails?.stripeSubscriptionId
+        ) {
+          try {
+            const invoices = await stripe.invoices.list({
+              subscription: order.transactionDetails.stripeSubscriptionId,
+              status: 'paid',
+              limit: 100,
+            });
+            const existingInvoiceIds = new Set(
+              recurringPayments.map((p) => p.invoiceId).filter(Boolean)
+            );
+            const recovered = [];
+            for (const invoice of invoices.data) {
+              if (existingInvoiceIds.has(invoice.id)) continue;
+              const paidAtUnix = invoice.status_transitions?.paid_at;
+              if (!paidAtUnix) continue;
+              recovered.push({
+                date: new Date(paidAtUnix * 1000),
+                amount: (invoice.amount_paid || 0) / 100,
+                invoiceId: invoice.id,
+                status: 'succeeded',
+              });
+            }
+            if (recovered.length) {
+              order.recurringDetails.paymentHistory = [
+                ...recurringPayments,
+                ...recovered,
+              ];
+              await order.save();
+              yearPayments = order.recurringDetails.paymentHistory.filter(
+                (payment) =>
+                  payment.date >= startDate &&
+                  payment.date <= endDate &&
+                  payment.status === 'succeeded'
+              );
+              console.log(
+                `[Statement] Recovered ${recovered.length} Stripe invoice(s) for recurring order ${order.donationId}`
+              );
+            }
+          } catch (recoveryErr) {
+            console.error(
+              `[Statement] Stripe recovery failed for order ${order.donationId}:`,
+              recoveryErr.message
+            );
+          }
+        }
+
+        // Lifetime fallback: if the FY filter still has nothing but the order
+        // does have succeeded payments outside that range, surface the lifetime
+        // total on the row so the donor sees what they actually paid. Only
+        // triggers when the FY-filtered list is empty, so it cannot double-count
+        // for orders whose charges fall correctly inside the FY.
+        if (yearPayments.length === 0) {
+          const lifetime = (order.recurringDetails.paymentHistory || []).filter(
+            (p) => p.status === 'succeeded'
+          );
+          if (lifetime.length > 0) {
+            yearPayments = lifetime;
+            console.log(
+              `[Statement] Order ${order.donationId}: no payments in FY range, using lifetime total (${lifetime.length} entries)`
+            );
+          }
+        }
+
         actualPayments = yearPayments.reduce((sum, payment) => sum + payment.amount, 0);
         paymentHistory = yearPayments.map(payment => ({
           date: payment.date,
@@ -2836,10 +2905,10 @@ exports.generateStatement = async (req, res) => {
       } else if (order.paymentType === 'installments' && order.installmentDetails) {
         // Calculate installment payments in the financial year
         const installmentPayments = order.installmentDetails.installmentHistory || [];
-        const yearInstallments = installmentPayments.filter(installment => 
+        const yearInstallments = installmentPayments.filter(installment =>
           installment.date >= startDate && installment.date <= endDate && installment.status === 'completed'
         );
-        
+
         actualPayments = yearInstallments.reduce((sum, installment) => sum + installment.amount, 0);
         paymentHistory = yearInstallments.map(installment => ({
           date: installment.date,
@@ -2907,13 +2976,13 @@ exports.generateStatement = async (req, res) => {
     }
 
     // Calculate totals
-    statement.summary.totalDonations = 
+    statement.summary.totalDonations =
       statement.breakdown.oneTimePayments.length +
       statement.breakdown.recurringPayments.length +
       statement.breakdown.installmentPayments.length +
       statement.breakdown.p2pDonations.length;
 
-    statement.summary.totalAmount = 
+    statement.summary.totalAmount =
       statement.summary.totalOneTimePayments +
       statement.summary.totalRecurringPayments +
       statement.summary.totalInstallmentPayments +
@@ -3197,10 +3266,79 @@ exports.downloadStatementPDF = async (req, res) => {
         }
       } else if (order.paymentType === 'recurring' && order.recurringDetails) {
         const recurringPayments = order.recurringDetails.paymentHistory || [];
-        const yearPayments = recurringPayments.filter(payment => 
+        let yearPayments = recurringPayments.filter(payment =>
           payment.date >= startDate && payment.date <= endDate && payment.status === 'succeeded'
         );
-        
+
+        // Recovery: when local paymentHistory has no entries in this FY but Stripe
+        // has paid invoices for the linked subscription, pull and persist them.
+        // Idempotent (deduped on invoiceId); only runs when local data is missing.
+        if (
+          yearPayments.length === 0 &&
+          order.transactionDetails?.stripeSubscriptionId
+        ) {
+          try {
+            const invoices = await stripe.invoices.list({
+              subscription: order.transactionDetails.stripeSubscriptionId,
+              status: 'paid',
+              limit: 100,
+            });
+            const existingInvoiceIds = new Set(
+              recurringPayments.map((p) => p.invoiceId).filter(Boolean)
+            );
+            const recovered = [];
+            for (const invoice of invoices.data) {
+              if (existingInvoiceIds.has(invoice.id)) continue;
+              const paidAtUnix = invoice.status_transitions?.paid_at;
+              if (!paidAtUnix) continue;
+              recovered.push({
+                date: new Date(paidAtUnix * 1000),
+                amount: (invoice.amount_paid || 0) / 100,
+                invoiceId: invoice.id,
+                status: 'succeeded',
+              });
+            }
+            if (recovered.length) {
+              order.recurringDetails.paymentHistory = [
+                ...recurringPayments,
+                ...recovered,
+              ];
+              await order.save();
+              yearPayments = order.recurringDetails.paymentHistory.filter(
+                (payment) =>
+                  payment.date >= startDate &&
+                  payment.date <= endDate &&
+                  payment.status === 'succeeded'
+              );
+              console.log(
+                `[Statement] Recovered ${recovered.length} Stripe invoice(s) for recurring order ${order.donationId}`
+              );
+            }
+          } catch (recoveryErr) {
+            console.error(
+              `[Statement] Stripe recovery failed for order ${order.donationId}:`,
+              recoveryErr.message
+            );
+          }
+        }
+
+        // Lifetime fallback: if the FY filter still has nothing but the order
+        // does have succeeded payments outside that range, surface the lifetime
+        // total on the row so the donor sees what they actually paid. Only
+        // triggers when the FY-filtered list is empty, so it cannot double-count
+        // for orders whose charges fall correctly inside the FY.
+        if (yearPayments.length === 0) {
+          const lifetime = (order.recurringDetails.paymentHistory || []).filter(
+            (p) => p.status === 'succeeded'
+          );
+          if (lifetime.length > 0) {
+            yearPayments = lifetime;
+            console.log(
+              `[Statement] Order ${order.donationId}: no payments in FY range, using lifetime total (${lifetime.length} entries)`
+            );
+          }
+        }
+
         actualPayments = yearPayments.reduce((sum, payment) => sum + payment.amount, 0);
         paymentHistory = yearPayments.map(payment => ({
           date: payment.date,
@@ -3217,7 +3355,7 @@ exports.downloadStatementPDF = async (req, res) => {
         };
       } else if (order.paymentType === 'installments' && order.installmentDetails) {
         const installmentPayments = order.installmentDetails.installmentHistory || [];
-        const yearInstallments = installmentPayments.filter(installment => 
+        const yearInstallments = installmentPayments.filter(installment =>
           installment.date >= startDate && installment.date <= endDate && installment.status === 'completed'
         );
         
