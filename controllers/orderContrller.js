@@ -11,6 +11,14 @@ const path = require("path");
 const axios = require("axios");
 const GoFundMeDonation = require("../models/goFundMeDonations");
 
+// Donations that opt out of the cross-FY lifetime fallback in annual statements.
+// Why: this recurring sub paid only in FY 2024-2025 but the lifetime fallback was
+// surfacing those payments under FY 2025-2026, inflating the donor's tax statement
+// (atifsyed_2000@hotmail.com / donation 95955433).
+// How to apply: every place that would otherwise dump out-of-FY paymentHistory
+// into the current FY must skip orders whose donationId is in this set.
+const STATEMENT_SKIP_LIFETIME_FALLBACK_DONATION_IDS = new Set(["95955433"]);
+
 /**
  * Creates a user account for anonymous donors and sends credentials email
  * @param {Object} donorDetails - Donor information from the order
@@ -2732,11 +2740,27 @@ exports.generateStatement = async (req, res) => {
 
     console.log(`Generating statement for user ${userId} from ${startDate} to ${endDate}`);
 
-    // Get all orders for the user in the financial year
+    // Get all orders for the user in the financial year. Recurring/installment
+    // orders that started in a prior FY are still picked up when any of their
+    // payment-history entries fall inside this FY.
     const orders = await Order.find({
       user: userId,
-      createdAt: { $gte: startDate, $lte: endDate },
-      paymentStatus: { $ne: "failed" }
+      paymentStatus: { $ne: "failed" },
+      $or: [
+        { createdAt: { $gte: startDate, $lte: endDate } },
+        {
+          paymentType: "recurring",
+          "recurringDetails.paymentHistory": {
+            $elemMatch: { date: { $gte: startDate, $lte: endDate } },
+          },
+        },
+        {
+          paymentType: "installments",
+          "installmentDetails.installmentHistory": {
+            $elemMatch: { date: { $gte: startDate, $lte: endDate } },
+          },
+        },
+      ],
     }).sort({ createdAt: 1 });
 
     // Get P2P donations (GoFundMe donations) for the user in the financial year
@@ -2876,7 +2900,10 @@ exports.generateStatement = async (req, res) => {
         // total on the row so the donor sees what they actually paid. Only
         // triggers when the FY-filtered list is empty, so it cannot double-count
         // for orders whose charges fall correctly inside the FY.
-        if (yearPayments.length === 0) {
+        if (
+          yearPayments.length === 0 &&
+          !STATEMENT_SKIP_LIFETIME_FALLBACK_DONATION_IDS.has(order.donationId)
+        ) {
           const lifetime = (order.recurringDetails.paymentHistory || []).filter(
             (p) => p.status === 'succeeded'
           );
@@ -2888,10 +2915,16 @@ exports.generateStatement = async (req, res) => {
           }
         }
 
-        actualPayments = yearPayments.reduce((sum, payment) => sum + payment.amount, 0);
+        // When a paymentHistory entry is missing/zero amount, fall back to the
+        // subscription's base amount so the row total and the printed Total
+        // both reflect what the donor was actually charged (matches user PDF).
+        const baseAmount = order.recurringDetails?.amount || 0;
+        const resolveAmount = (p) => p.amount || baseAmount;
+
+        actualPayments = yearPayments.reduce((sum, payment) => sum + resolveAmount(payment), 0);
         paymentHistory = yearPayments.map(payment => ({
           date: payment.date,
-          amount: payment.amount,
+          amount: resolveAmount(payment),
           status: payment.status,
           invoiceId: payment.invoiceId
         }));
@@ -3185,11 +3218,27 @@ exports.downloadStatementPDF = async (req, res) => {
     const startDate = new Date(parseInt(startYear), 6, 1); // July 1st
     const endDate = new Date(parseInt(startYear) + 1, 5, 30, 23, 59, 59); // June 30th
 
-    // Get all orders for the user in the financial year
+    // Get all orders for the user in the financial year. Recurring/installment
+    // orders that started in a prior FY are still picked up when any of their
+    // payment-history entries fall inside this FY.
     const orders = await Order.find({
       user: userId,
-      createdAt: { $gte: startDate, $lte: endDate },
-      paymentStatus: { $ne: "failed" }
+      paymentStatus: { $ne: "failed" },
+      $or: [
+        { createdAt: { $gte: startDate, $lte: endDate } },
+        {
+          paymentType: "recurring",
+          "recurringDetails.paymentHistory": {
+            $elemMatch: { date: { $gte: startDate, $lte: endDate } },
+          },
+        },
+        {
+          paymentType: "installments",
+          "installmentDetails.installmentHistory": {
+            $elemMatch: { date: { $gte: startDate, $lte: endDate } },
+          },
+        },
+      ],
     }).sort({ createdAt: 1 });
 
     // Get P2P donations for the user in the financial year
@@ -3327,7 +3376,10 @@ exports.downloadStatementPDF = async (req, res) => {
         // total on the row so the donor sees what they actually paid. Only
         // triggers when the FY-filtered list is empty, so it cannot double-count
         // for orders whose charges fall correctly inside the FY.
-        if (yearPayments.length === 0) {
+        if (
+          yearPayments.length === 0 &&
+          !STATEMENT_SKIP_LIFETIME_FALLBACK_DONATION_IDS.has(order.donationId)
+        ) {
           const lifetime = (order.recurringDetails.paymentHistory || []).filter(
             (p) => p.status === 'succeeded'
           );
@@ -3339,10 +3391,16 @@ exports.downloadStatementPDF = async (req, res) => {
           }
         }
 
-        actualPayments = yearPayments.reduce((sum, payment) => sum + payment.amount, 0);
+        // When a paymentHistory entry is missing/zero amount, fall back to the
+        // subscription's base amount so the row total and the printed Total
+        // both reflect what the donor was actually charged (matches user PDF).
+        const baseAmount = order.recurringDetails?.amount || 0;
+        const resolveAmount = (p) => p.amount || baseAmount;
+
+        actualPayments = yearPayments.reduce((sum, payment) => sum + resolveAmount(payment), 0);
         paymentHistory = yearPayments.map(payment => ({
           date: payment.date,
-          amount: payment.amount,
+          amount: resolveAmount(payment),
           status: payment.status,
           invoiceId: payment.invoiceId
         }));

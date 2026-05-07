@@ -434,32 +434,54 @@ const generateStatementPDF = async (statement, userEmail) => {
     return payment?.donationType || fromItems || "Sadaqah";
   };
 
-  // One-time
+  // One-time: render one row per item so multi-item donations split out the
+  // same way as the donor-facing user PDF (e.g. a $4 order with two $2 items
+  // becomes two rows, not one collapsed row).
   (statement.breakdown?.oneTimePayments || []).forEach((payment) => {
-    const donationId = payment.donationId || "";
-    const description = donationTitleFromItems(payment.items) || "";
-    const donationType = donationTypeFromPayment(payment);
+    // Skip orders that never actually charged. paymentHistory is only populated
+    // upstream when paymentStatus is 'completed'/'succeeded', so an empty array
+    // means the order is pending / failed / abandoned and would otherwise show
+    // ghost rows that aren't included in the printed Total.
     const hist = payment.paymentHistory || [];
-    if (hist.length) {
+    if (hist.length === 0) return;
+
+    const donationId = payment.donationId || "";
+    // Use the order-level donation type for every item row, matching the
+    // donor-facing user PDF. Item-level donationType defaults to "Sadaqah" in
+    // the schema and would otherwise mislabel rows where the actual donation
+    // type lives at the order level (e.g. "Water Fund", "Zakat ul Maal").
+    const donationType = donationTypeFromPayment(payment);
+    const paymentDate = hist[0].date;
+    const items = Array.isArray(payment.items) ? payment.items : [];
+
+    if (items.length > 0) {
+      items.forEach((item) => {
+        const itemAmount =
+          (Number(item.price) || 0) * (Number(item.quantity) || 1);
+        const description = item.title
+          ? item.title +
+            (item.onBehalfOf ? ` (on behalf of ${item.onBehalfOf})` : "")
+          : "Donation";
+        pushRow({
+          donationDate: paymentDate,
+          donationId,
+          description,
+          paymentType: "One-time",
+          donationType,
+          amount: itemAmount,
+        });
+      });
+    } else {
       hist.forEach((h) =>
         pushRow({
           donationDate: h.date,
           donationId,
-          description,
+          description: donationTitleFromItems(payment.items) || "",
           paymentType: "One-time",
           donationType,
           amount: h.amount,
         })
       );
-    } else {
-      pushRow({
-        donationDate: payment.createdAt,
-        donationId,
-        description,
-        paymentType: "One-time",
-        donationType,
-        amount: payment.actualPayments,
-      });
     }
   });
 
@@ -468,6 +490,7 @@ const generateStatementPDF = async (statement, userEmail) => {
     const donationId = payment.donationId || "";
     const description = donationTitleFromItems(payment.items) || "";
     const donationType = donationTypeFromPayment(payment);
+    const baseAmount = payment.recurringDetails?.amount;
     const hist = payment.paymentHistory || [];
     if (hist.length) {
       hist.forEach((h) =>
@@ -477,7 +500,9 @@ const generateStatementPDF = async (statement, userEmail) => {
           description,
           paymentType: "Recurring",
           donationType,
-          amount: h.amount,
+          // Fall back to the subscription's base amount when the history entry
+          // has a missing/zero amount (matches the user PDF's behaviour).
+          amount: h.amount || baseAmount || 0,
         })
       );
     } else {
@@ -487,7 +512,7 @@ const generateStatementPDF = async (statement, userEmail) => {
         description,
         paymentType: "Recurring",
         donationType,
-        amount: payment.actualPayments,
+        amount: payment.actualPayments || baseAmount || 0,
       });
     }
   });
@@ -561,7 +586,14 @@ const generateStatementPDF = async (statement, userEmail) => {
 
   // Total amount should sit directly under table.
   // Tax/authority/contact must behave like a real page footer (bottom anchored).
-  const totalAmount = Number(statement.summary?.totalAmount || 0);
+  // Sum directly from the rendered rows so the printed Total can never
+  // disagree with the visible row amounts (the upstream summary occasionally
+  // drifts when paymentHistory entries have zero/missing amounts that the
+  // row-rendering code falls back on but the controller summary doesn't).
+  const totalAmount = tableRows.reduce((sum, row) => {
+    const numeric = Number(String(row.amount || "0").replace(/[^0-9.-]/g, ""));
+    return sum + (Number.isFinite(numeric) ? numeric : 0);
+  }, 0);
   const totalText = `Total Amount: $${totalAmount.toFixed(2)}`;
   const totalY = lastTableY + 10;
   doc.fontSize(10).font("Helvetica-Bold").fillColor("#000000");
