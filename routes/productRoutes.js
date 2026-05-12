@@ -9,11 +9,13 @@ const {
     getProductById,
     updateProduct,
     deleteProduct,
-    getCategories
+    getCategories,
+    getFeaturedProducts
 } = require('../controllers/productController');
 
 // Public routes
 router.get('/', getProducts);
+router.get('/featured', getFeaturedProducts);
 router.get('/categories', getCategories);
 router.get('/:id', getProductById);
 

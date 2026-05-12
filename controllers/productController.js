@@ -1,13 +1,32 @@
 const Product = require('../models/product');
 const { s3Client, deleteS3Object } = require('../config/s3');
 
+const FEATURED_LIMIT = 4;
+
+const toBool = (v) => v === 'true' || v === true;
+
+// Throws a 400-style error if turning this product into a featured one
+// would exceed the FEATURED_LIMIT. `selfId` is excluded from the count.
+const assertFeaturedCapacity = async (selfId = null) => {
+    const filter = { featured: true, isActive: true };
+    if (selfId) filter._id = { $ne: selfId };
+    const count = await Product.countDocuments(filter);
+    if (count >= FEATURED_LIMIT) {
+        const err = new Error(
+            `You can only feature up to ${FEATURED_LIMIT} products. Unfeature an existing one first.`
+        );
+        err.statusCode = 400;
+        throw err;
+    }
+};
+
 // @desc    Create a new product
 // @route   POST /api/products
 // @access  Private/Admin
 exports.createProduct = async (req, res) => {
     try {
-        const { title, description, price, category, zakatEligible, sadaqahEligible } = req.body;
-        
+        const { title, description, price, category, zakatEligible, sadaqahEligible, featured, featuredOrder } = req.body;
+
         // Validate required fields
         if (!title || !description || !price || !category) {
             return res.status(400).json({ message: 'Please provide all required fields' });
@@ -15,10 +34,15 @@ exports.createProduct = async (req, res) => {
 
         // Check if image was uploaded
         if (!req.file) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                message: 'Product image is required' 
+                message: 'Product image is required'
             });
+        }
+
+        const isFeatured = toBool(featured);
+        if (isFeatured) {
+            await assertFeaturedCapacity();
         }
 
         // Get the S3 file URL from the uploaded file
@@ -33,22 +57,24 @@ exports.createProduct = async (req, res) => {
             category,
             image: imageUrl,  // Store full S3 URL
             imagePath: imagePath,  // Store S3 key for future reference
-            zakatEligible: zakatEligible === 'true' || zakatEligible === true,
-            sadaqahEligible: sadaqahEligible === 'true' || sadaqahEligible === true
+            zakatEligible: toBool(zakatEligible),
+            sadaqahEligible: toBool(sadaqahEligible),
+            featured: isFeatured,
+            featuredOrder: Number.isFinite(Number(featuredOrder)) ? Number(featuredOrder) : 0
         });
 
         const savedProduct = await product.save();
-        
-        res.status(201).json({ 
-            success: true, 
+
+        res.status(201).json({
+            success: true,
             message: 'Product created successfully',
             product: savedProduct
         });
     } catch (error) {
         console.error('Error creating product:', error);
-        res.status(500).json({
+        res.status(error.statusCode || 500).json({
             success: false,
-            message: 'Server error',
+            message: error.statusCode ? error.message : 'Server error',
             error: error.message
         });
     }
@@ -101,16 +127,16 @@ exports.getProductById = async (req, res) => {
 // @access  Private/Admin
 exports.updateProduct = async (req, res) => {
     try {
-        const { title, description, price, category, zakatEligible, sadaqahEligible } = req.body;
-        const updateData = { 
-            title, 
-            description, 
-            price, 
+        const { title, description, price, category, zakatEligible, sadaqahEligible, featured, featuredOrder } = req.body;
+        const updateData = {
+            title,
+            description,
+            price,
             category,
-            zakatEligible: zakatEligible === 'true' || zakatEligible === true,
-            sadaqahEligible: sadaqahEligible === 'true' || sadaqahEligible === true
+            zakatEligible: toBool(zakatEligible),
+            sadaqahEligible: toBool(sadaqahEligible)
         };
-        
+
         // Find the existing product
         const existingProduct = await Product.findById(req.params.id);
         if (!existingProduct) {
@@ -118,6 +144,20 @@ exports.updateProduct = async (req, res) => {
                 success: false,
                 message: 'Product not found'
             });
+        }
+
+        // Featured flag — only enforce cap when transitioning from
+        // not-featured to featured. Order can change freely.
+        if (typeof featured !== 'undefined') {
+            const willBeFeatured = toBool(featured);
+            if (willBeFeatured && !existingProduct.featured) {
+                await assertFeaturedCapacity(existingProduct._id);
+            }
+            updateData.featured = willBeFeatured;
+        }
+        if (typeof featuredOrder !== 'undefined') {
+            const n = Number(featuredOrder);
+            updateData.featuredOrder = Number.isFinite(n) ? n : 0;
         }
 
         // If a new image is uploaded
@@ -150,9 +190,9 @@ exports.updateProduct = async (req, res) => {
         });
     } catch (error) {
         console.error('Error updating product:', error);
-        res.status(500).json({
+        res.status(error.statusCode || 500).json({
             success: false,
-            message: 'Server error',
+            message: error.statusCode ? error.message : 'Server error',
             error: error.message
         });
     }
@@ -191,6 +231,25 @@ exports.deleteProduct = async (req, res) => {
         });
     } catch (error) {
         console.error('Error deleting product:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+
+// @desc    Get featured products for home page (capped at FEATURED_LIMIT)
+// @route   GET /api/products/featured
+// @access  Public
+exports.getFeaturedProducts = async (req, res) => {
+    try {
+        const products = await Product.find({ featured: true, isActive: true })
+            .sort({ featuredOrder: 1, createdAt: -1 })
+            .limit(FEATURED_LIMIT);
+        res.json({ success: true, products });
+    } catch (error) {
+        console.error('Error fetching featured products:', error);
         res.status(500).json({
             success: false,
             message: 'Server error',

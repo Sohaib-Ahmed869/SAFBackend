@@ -47,6 +47,15 @@ const productSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    featured: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
+    featuredOrder: {
+        type: Number,
+        default: 0
+    },
     createdAt: {
         type: Date,
         default: Date.now
