@@ -29,6 +29,8 @@ const donationtyperoute = require("./routes/donationtyperoute");
 const goFundMeRoutes = require("./routes/goFundMeRoutes");
 const paypalRoutes = require("./routes/paypalRoutes");
 const heroSliderRoutes = require("./routes/heroSliderRoutes");
+const dynamicPageRoutes = require("./routes/dynamicPageRoutes");
+const dynamicPageAdminRoutes = require("./routes/admin/dynamicPage.routes");
 const fs = require("fs");
 const path = require("path");
 const setupInstallmentProcessingJob = require("./jobs/processInstallments");
@@ -143,6 +145,8 @@ app.use("/api/donationtypes", donationtyperoute);
 app.use("/api/paypal", paypalRoutes);
 app.use("/api/gofundme", goFundMeRoutes);
 app.use("/api/hero-slider", heroSliderRoutes);
+app.use("/api/pages", dynamicPageRoutes);
+app.use("/api/admin/pages", dynamicPageAdminRoutes);
 app.post("/api/newsletter", async (req, res) => {
   const { email } = req.body;
   const existingSubscriber = await newsLetter.findOne({ email });

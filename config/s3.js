@@ -87,6 +87,27 @@ const heroSliderUpload = multer({
   },
 });
 
+// Configure multer for Dynamic Page section uploads
+const dynamicPageUpload = multer({
+  storage: multerS3(createUploadConfig("dynamic-pages")),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB per file
+    files: 20,
+  },
+  fileFilter: function (req, file, cb) {
+    const filetypes = /jpeg|jpg|png|gif|webp/;
+    const mimetype = filetypes.test(file.mimetype);
+    const extname = filetypes.test(
+      path.extname(file.originalname).toLowerCase()
+    );
+
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error("Only image files are allowed!"));
+  },
+});
+
 // Helper function to delete objects from S3
 const deleteS3Object = async (key) => {
   const params = {
@@ -109,5 +130,6 @@ module.exports = {
   deleteS3Object,
   eventsUpload,
   productUpload,
-  heroSliderUpload
+  heroSliderUpload,
+  dynamicPageUpload
 };
