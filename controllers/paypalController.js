@@ -1,4 +1,5 @@
 const axios = require('axios');
+const Order = require('../models/order');
 
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
@@ -20,6 +21,22 @@ function getFrequencyFromPayPalPlan(planId) {
 // Get your actual frontend URL - replace with your production URL when deploying
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://shahidafridifoundation.org.au';
 
+// Mirrors generateDonationId() in orderContrller.js so PayPal orders use the same
+// short 8-char id format as the rest of the app (instead of long DON-<ts>-<n> ids
+// that overflow statement/receipt columns). Kept local to avoid coupling this
+// controller to the large order controller and the standalone backfill scripts.
+function generateDonationId(user = null) {
+  let userPrefix;
+  if (user && user._id) {
+    const userId = user._id.toString();
+    userPrefix = userId.substring(Math.max(0, userId.length - 4));
+  } else {
+    userPrefix = Math.floor(1000 + Math.random() * 9000).toString();
+  }
+  const randomNum = Math.floor(1000 + Math.random() * 9000).toString();
+  return `${userPrefix}${randomNum}`;
+}
+
 // Get PayPal access token
 const getAccessToken = async () => {
   try {
@@ -40,6 +57,168 @@ const getAccessToken = async () => {
     throw error;
   }
 };
+
+// Map a PayPal subscription status to our top-level order paymentStatus enum.
+function mapPaymentStatus(paypalStatus) {
+  switch (paypalStatus) {
+    case 'ACTIVE': return 'active';
+    case 'SUSPENDED': return 'paused';
+    case 'CANCELLED': return 'cancelled';
+    case 'EXPIRED': return 'ended';
+    default: return 'pending';
+  }
+}
+
+// Map a PayPal subscription status to the recurringDetails.status enum
+// (active|paused|cancelled|ended) — note 'pending' is NOT valid here.
+function mapRecurringStatus(paypalStatus) {
+  switch (paypalStatus) {
+    case 'SUSPENDED': return 'paused';
+    case 'CANCELLED': return 'cancelled';
+    case 'EXPIRED': return 'ended';
+    default: return 'active';
+  }
+}
+
+// Fetch a subscription record from PayPal.
+async function fetchSubscription(subscriptionId) {
+  const accessToken = await getAccessToken();
+  const res = await axios.get(
+    `${PAYPAL_BASE_URL}/v1/billing/subscriptions/${subscriptionId}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  return res.data;
+}
+
+const PAYPAL_INTERVAL_TO_FREQUENCY = {
+  DAY: 'daily',
+  WEEK: 'weekly',
+  MONTH: 'monthly',
+  YEAR: 'yearly',
+};
+
+// Resolve the true donation frequency by reading the plan's billing interval.
+// The subscription record doesn't carry it, so fetch the plan. Returns one of
+// daily|weekly|monthly|yearly, or null if it can't be determined.
+async function fetchPlanFrequency(planId) {
+  if (!planId) return null;
+  try {
+    const accessToken = await getAccessToken();
+    const res = await axios.get(
+      `${PAYPAL_BASE_URL}/v1/billing/plans/${planId}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const cycles = res.data.billing_cycles || [];
+    const regular = cycles.find((c) => c.tenure_type === 'REGULAR') || cycles[0];
+    const unit = regular?.frequency?.interval_unit;
+    return PAYPAL_INTERVAL_TO_FREQUENCY[unit] || null;
+  } catch (error) {
+    console.error('Failed to fetch plan frequency for', planId, ':', error.response?.data || error.message);
+    return null;
+  }
+}
+
+// Locate the recurring order for a subscription id across the legacy field shapes.
+async function findRecurringOrderBySubscriptionId(subscriptionId) {
+  if (!subscriptionId) return null;
+  return Order.findOne({
+    $or: [
+      { 'recurringDetails.paypalSubscriptionId': subscriptionId },
+      { 'paypalDetails.subscriptionId': subscriptionId },
+      // Legacy orders stored the subscription id (I-...) under paypalDetails.paymentId.
+      { 'paypalDetails.paymentId': subscriptionId },
+      { 'transactionDetails.subscription_id': subscriptionId },
+      { externalId: subscriptionId },
+    ],
+  });
+}
+
+// Build the Order document fields from a PayPal subscription record.
+// `user` is optional (set only when a logged-in user confirmed in the browser).
+function buildRecurringOrderData(sub, subscriptionId, user, frequencyOverride) {
+  const { v4: uuidv4 } = require('uuid');
+  const subscriptionAmount = parseFloat(
+    sub.billing_info?.last_payment?.amount?.value ||
+    sub.plan?.billing_cycles?.[0]?.pricing_scheme?.fixed_price?.value ||
+    0
+  );
+  // Prefer the real interval read from the plan; fall back to the id heuristic.
+  const frequency = frequencyOverride || getFrequencyFromPayPalPlan(sub.plan_id);
+
+  // Prefer the logged-in user; otherwise fall back to the PayPal subscriber.
+  let donorName = 'Anonymous Donor';
+  let donorEmail = '';
+  let donorPhone = '';
+  let donorAddress = {};
+  let userId;
+  if (user) {
+    donorName = user.name || user.firstName || 'Anonymous Donor';
+    donorEmail = user.email || '';
+    donorPhone = user.phone || '';
+    donorAddress = user.address || {};
+    userId = user._id;
+  } else if (sub.subscriber) {
+    donorEmail = sub.subscriber.email_address || '';
+    donorName = sub.subscriber.name?.given_name
+      ? `${sub.subscriber.name.given_name} ${sub.subscriber.name.surname || ''}`.trim()
+      : 'Anonymous Donor';
+  }
+
+  return {
+    user: userId,
+    donationId: generateDonationId(user),
+    items: [{
+      title: 'Recurring Donation',
+      price: subscriptionAmount,
+      quantity: 1,
+      description: `Recurring ${frequency} donation`,
+    }],
+    paymentType: 'recurring',
+    donationType: 'general',
+    paymentMethod: 'paypal',
+    paymentStatus: mapPaymentStatus(sub.status),
+    totalAmount: subscriptionAmount,
+    recurringDetails: {
+      frequency,
+      amount: subscriptionAmount,
+      startDate: sub.start_time ? new Date(sub.start_time) : new Date(),
+      endDate: sub.billing_info?.final_payment_time ? new Date(sub.billing_info.final_payment_time) : null,
+      status: mapRecurringStatus(sub.status),
+      nextPaymentDate: sub.billing_info?.next_billing_time ? new Date(sub.billing_info.next_billing_time) : null,
+      totalPayments: 0,
+      paymentHistory: [],
+      paypalSubscriptionId: subscriptionId,
+      paypalPlanId: sub.plan_id,
+    },
+    externalId: subscriptionId,
+    transactionDetails: {
+      subscription_id: subscriptionId,
+      plan_id: sub.plan_id,
+      status: sub.status,
+      create_time: sub.create_time,
+      links: sub.links,
+    },
+    details: sub,
+    donorDetails: { name: donorName, email: donorEmail, phone: donorPhone, address: donorAddress },
+    createdAt: sub.create_time ? new Date(sub.create_time) : new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+// Find the recurring order for a subscription, creating it from PayPal if missing.
+// This makes the webhook authoritative: orders no longer depend on the browser
+// making it back to the /order-confirmation page.
+async function findOrCreateRecurringOrder(subscriptionId, user) {
+  let order = await findRecurringOrderBySubscriptionId(subscriptionId);
+  if (order) return order;
+
+  const sub = await fetchSubscription(subscriptionId);
+  const frequency = await fetchPlanFrequency(sub.plan_id);
+  order = new Order(buildRecurringOrderData(sub, subscriptionId, user, frequency));
+  await order.save();
+  console.log('Created recurring order from subscription:', subscriptionId, '->', order.donationId);
+  return order;
+}
 
 // Create PayPal order
 exports.createOrder = async (req, res) => {
@@ -300,8 +479,7 @@ exports.confirmSubscription = async (req, res) => {
     }
 
     try {
-      // Import required models and utilities
-      const Order = require('../models/order');
+      // Import required utilities
       const { v4: uuidv4 } = require('uuid');
       
       // Check if order already exists
@@ -316,8 +494,8 @@ exports.confirmSubscription = async (req, res) => {
       
       if (!order) {
         console.log('Creating new order in database...');
-        const donationId = `DON-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        const frequency = getFrequencyFromPayPalPlan(sub.plan_id);
+        const donationId = generateDonationId(req.user);
+        const frequency = (await fetchPlanFrequency(sub.plan_id)) || getFrequencyFromPayPalPlan(sub.plan_id);
         
         const orderData = {
           user: userId,
@@ -338,7 +516,7 @@ exports.confirmSubscription = async (req, res) => {
             amount: subscriptionAmount || 0,
             startDate: sub.start_time ? new Date(sub.start_time) : new Date(),
             endDate: sub.billing_info?.final_payment_time ? new Date(sub.billing_info.final_payment_time) : null,
-            status: sub.status === 'ACTIVE' ? 'active' : 'pending',
+            status: mapRecurringStatus(sub.status),
             nextPaymentDate: sub.billing_info?.next_billing_time ? new Date(sub.billing_info.next_billing_time) : null,
             totalPayments: sub.billing_info?.last_payment ? 1 : 0,
             paymentHistory: sub.billing_info?.last_payment ? [{
@@ -495,25 +673,27 @@ exports.handleWebhook = async (req, res) => {
       case 'BILLING.SUBSCRIPTION.ACTIVATED':
         await handleSubscriptionActivated(event);
         break;
-      
-      case 'BILLING.SUBSCRIPTION.PAYMENT.COMPLETED':
-        await handleSubscriptionPaymentCompleted(event);
-        break;
-      
+
       case 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
         await handleSubscriptionPaymentFailed(event);
         break;
-      
+
       case 'BILLING.SUBSCRIPTION.CANCELLED':
         await handleSubscriptionCancelled(event);
         break;
-      
+
       case 'BILLING.SUBSCRIPTION.SUSPENDED':
         await handleSubscriptionSuspended(event);
         break;
-      
+
       case 'PAYMENT.SALE.COMPLETED':
-        await handlePaymentSaleCompleted(event);
+        // Recurring subscription charges arrive here with resource.billing_agreement_id
+        // set to the subscription ID (I-...). One-off sales have no billing_agreement_id.
+        if (event.resource && event.resource.billing_agreement_id) {
+          await handleSubscriptionPaymentCompleted(event);
+        } else {
+          await handlePaymentSaleCompleted(event);
+        }
         break;
       
       default:
@@ -531,17 +711,11 @@ exports.handleWebhook = async (req, res) => {
 const handleSubscriptionActivated = async (event) => {
   const subscription = event.resource;
   console.log('Subscription activated:', subscription.id);
-  
-  // Find order by PayPal subscription ID
-  const order = await Order.findOne({ 
-    $or: [
-      { 'recurringDetails.paypalSubscriptionId': subscription.id },
-      { 'paypalDetails.subscriptionId': subscription.id },
-      { 'transactionDetails.subscription_id': subscription.id },
-      { externalId: subscription.id }
-    ]
-  });
-  
+
+  // Find the order, creating it from the subscription if the browser confirm
+  // flow never ran. This webhook is the authoritative create path.
+  const order = await findOrCreateRecurringOrder(subscription.id);
+
   if (order) {
     order.paymentStatus = 'active';
     order.paypalDetails = {
@@ -568,17 +742,21 @@ const handleSubscriptionPaymentCompleted = async (event) => {
   const payment = event.resource;
   console.log('Webhook payment resource:', JSON.stringify(payment, null, 2));
   console.log('Looking for order with billing_agreement_id:', payment.billing_agreement_id);
-  
-  // Find order by PayPal subscription ID - check multiple possible locations
-  const order = await Order.findOne({ 
-    $or: [
-      { 'recurringDetails.paypalSubscriptionId': payment.billing_agreement_id },
-      { 'paypalDetails.subscriptionId': payment.billing_agreement_id },
-      { 'transactionDetails.subscription_id': payment.billing_agreement_id },
-      { externalId: payment.billing_agreement_id }
-    ]
-  });
-  
+
+  // Recurring charges carry billing_agreement_id (the subscription id). Create
+  // the order from PayPal if it doesn't exist yet. Installment orders have no
+  // billing_agreement_id and must already exist, so fall back to a plain lookup.
+  const subscriptionId = payment.billing_agreement_id;
+  const order = subscriptionId
+    ? await findOrCreateRecurringOrder(subscriptionId)
+    : await Order.findOne({
+        $or: [
+          { 'paypalDetails.subscriptionId': payment.billing_agreement_id },
+          { 'transactionDetails.subscription_id': payment.billing_agreement_id },
+          { externalId: payment.billing_agreement_id },
+        ],
+      });
+
   console.log('Order found:', !!order);
   if (order) {
     console.log('Order ID:', order._id, 'Donation ID:', order.donationId);
@@ -614,19 +792,26 @@ const handleSubscriptionPaymentCompleted = async (event) => {
       // Add to payment history for recurring - update recurringDetails
       if (!order.recurringDetails) order.recurringDetails = {};
       if (!order.recurringDetails.paymentHistory) order.recurringDetails.paymentHistory = [];
-      
-      order.recurringDetails.paymentHistory.push({
-        date: new Date(),
-        amount: parseFloat(payment.amount.total),
-        paypalPaymentId: payment.id,
-        status: 'succeeded'
-      });
-      
-      // Update total payments count
-      order.recurringDetails.totalPayments = order.recurringDetails.paymentHistory.length;
-      
-      // Update last payment date
-      order.recurringDetails.lastPaymentDate = new Date();
+
+      // Idempotency: PayPal retries and can redeliver webhooks. The sale id is
+      // stored in invoiceId (the schema has no paypalPaymentId field). Skip dupes.
+      const alreadyRecorded = order.recurringDetails.paymentHistory.some(
+        (p) => p.invoiceId === payment.id
+      );
+      if (!alreadyRecorded) {
+        order.recurringDetails.paymentHistory.push({
+          date: payment.create_time ? new Date(payment.create_time) : new Date(),
+          amount: parseFloat(payment.amount.total),
+          invoiceId: payment.id,
+          status: 'succeeded'
+        });
+
+        // Update total payments count
+        order.recurringDetails.totalPayments = order.recurringDetails.paymentHistory.length;
+
+        // Update last payment date
+        order.recurringDetails.lastPaymentDate = new Date();
+      }
     }
     
     order.paypalDetails = {
@@ -654,16 +839,9 @@ const handleSubscriptionPaymentCompleted = async (event) => {
 const handleSubscriptionPaymentFailed = async (event) => {
   const payment = event.resource;
   console.log('Subscription payment failed:', payment.id);
-  
-  const order = await Order.findOne({ 
-    $or: [
-      { 'recurringDetails.paypalSubscriptionId': payment.billing_agreement_id },
-      { 'paypalDetails.subscriptionId': payment.billing_agreement_id },
-      { 'transactionDetails.subscription_id': payment.billing_agreement_id },
-      { externalId: payment.billing_agreement_id }
-    ]
-  });
-  
+
+  const order = await findRecurringOrderBySubscriptionId(payment.billing_agreement_id);
+
   if (order) {
     if (order.paymentType === 'installments') {
       // Add failed payment to history
@@ -694,16 +872,9 @@ const handleSubscriptionPaymentFailed = async (event) => {
 const handleSubscriptionCancelled = async (event) => {
   const subscription = event.resource;
   console.log('Subscription cancelled:', subscription.id);
-  
-  const order = await Order.findOne({ 
-    $or: [
-      { 'recurringDetails.paypalSubscriptionId': subscription.id },
-      { 'paypalDetails.subscriptionId': subscription.id },
-      { 'transactionDetails.subscription_id': subscription.id },
-      { externalId: subscription.id }
-    ]
-  });
-  
+
+  const order = await findRecurringOrderBySubscriptionId(subscription.id);
+
   if (order) {
     order.paymentStatus = 'cancelled';
     order.paypalDetails = {
@@ -725,16 +896,9 @@ const handleSubscriptionCancelled = async (event) => {
 const handleSubscriptionSuspended = async (event) => {
   const subscription = event.resource;
   console.log('Subscription suspended:', subscription.id);
-  
-  const order = await Order.findOne({ 
-    $or: [
-      { 'recurringDetails.paypalSubscriptionId': subscription.id },
-      { 'paypalDetails.subscriptionId': subscription.id },
-      { 'transactionDetails.subscription_id': subscription.id },
-      { externalId: subscription.id }
-    ]
-  });
-  
+
+  const order = await findRecurringOrderBySubscriptionId(subscription.id);
+
   if (order) {
     order.paymentStatus = 'suspended';
     order.paypalDetails = {
@@ -747,6 +911,14 @@ const handleSubscriptionSuspended = async (event) => {
     console.log('Order suspended:', order.donationId);
   }
 };
+
+// Exported for reuse by maintenance scripts (e.g. the recurring backfill) so
+// orders are created with exactly the same shape as the live webhook path.
+exports.findOrCreateRecurringOrder = findOrCreateRecurringOrder;
+exports.fetchSubscription = fetchSubscription;
+exports.fetchPlanFrequency = fetchPlanFrequency;
+exports.findRecurringOrderBySubscriptionId = findRecurringOrderBySubscriptionId;
+exports.buildRecurringOrderData = buildRecurringOrderData;
 
 // Handle one-time payment completion
 const handlePaymentSaleCompleted = async (event) => {
