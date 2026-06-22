@@ -4,6 +4,9 @@ const router     = express.Router();
 const isAdmin    = require("../../middleware/isAdmin");
 const Order      = require("../../models/order");
 const User       = require("../../models/user");
+const PaymentMethod = require("../../models/paymentMethods");
+const GoFundMe   = require("../../models/goFundMe");
+const MergeLog   = require("../../models/mergeLog");
 const stripeLib  = require("stripe");
 
 // Helper: calculate full expected amount for recurring orders
@@ -292,6 +295,296 @@ router.get("/", isAdmin, async (req, res) => {
 });
 
 
+
+// GET /admin/donors/lookup?email=...
+// Look up a single user by email so the admin can preview an account before merging.
+// NOTE: must be declared before the "/:id" route, otherwise "lookup" is captured as an id.
+router.get("/lookup", isAdmin, async (req, res) => {
+  try {
+    const email = (req.query.email || "").trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ status: "Error", message: "Email is required" });
+    }
+
+    const user = await User.findOne({ email }).lean();
+    if (!user) {
+      return res.status(404).json({ status: "Error", message: "No user found with that email" });
+    }
+
+    const donationCount = await Order.countDocuments({
+      user: user._id,
+      paymentStatus: { $ne: "failed" },
+    });
+
+    res.json({
+      status: "Success",
+      data: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        donationCount,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "Error", message: "Failed to look up user", error: err.message });
+  }
+});
+
+// POST /admin/donors/merge
+// Merge a secondary account into a primary account: reassign every reference that
+// points at the secondary user (donations, payment methods, campaigns, etc.) to the
+// primary user, then delete the now-empty secondary account.
+// Body: { primaryEmail, secondaryEmail }
+router.post("/merge", isAdmin, async (req, res) => {
+  try {
+    const primaryEmail   = (req.body.primaryEmail   || "").trim().toLowerCase();
+    const secondaryEmail = (req.body.secondaryEmail || "").trim().toLowerCase();
+
+    if (!primaryEmail || !secondaryEmail) {
+      return res.status(400).json({ status: "Error", message: "Both primaryEmail and secondaryEmail are required" });
+    }
+    if (primaryEmail === secondaryEmail) {
+      return res.status(400).json({ status: "Error", message: "Primary and secondary emails must be different" });
+    }
+
+    const [primary, secondary] = await Promise.all([
+      User.findOne({ email: primaryEmail }),
+      User.findOne({ email: secondaryEmail }),
+    ]);
+
+    if (!primary)   return res.status(404).json({ status: "Error", message: `Primary account not found: ${primaryEmail}` });
+    if (!secondary) return res.status(404).json({ status: "Error", message: `Secondary account not found: ${secondaryEmail}` });
+
+    // Safety: never delete an admin account during a merge.
+    if (secondary.role === "admin") {
+      return res.status(403).json({ status: "Error", message: "The secondary (to-be-removed) account is an admin and cannot be merged away" });
+    }
+
+    const primaryId   = primary._id;
+    const secondaryId = secondary._id;
+
+    // Capture the exact ids being moved BEFORE updating, so a future reverse can move
+    // back only these records (not ones that already belonged to the primary).
+    const idsOf = (docs) => docs.map((d) => d._id);
+    const [orderIds, paymentMethodIds, campaignIds, approvalCampaignIds, cancellationOrderIds] =
+      await Promise.all([
+        Order.find({ user: secondaryId }, { _id: 1 }).lean().then(idsOf),
+        PaymentMethod.find({ user: secondaryId }, { _id: 1 }).lean().then(idsOf),
+        GoFundMe.find({ userId: secondaryId }, { _id: 1 }).lean().then(idsOf),
+        GoFundMe.find({ approvedBy: secondaryId }, { _id: 1 }).lean().then(idsOf),
+        Order.find({ "cancellationDetails.cancelledBy": secondaryId }, { _id: 1 }).lean().then(idsOf),
+      ]);
+
+    // Snapshot the secondary user verbatim (incl. _id, password hash, timestamps) so
+    // it can be restored exactly on reverse.
+    const secondarySnapshot = secondary.toObject();
+
+    // Reassign every reference from secondary -> primary.
+    await Promise.all([
+      Order.updateMany({ _id: { $in: orderIds } }, { $set: { user: primaryId } }),
+      PaymentMethod.updateMany({ _id: { $in: paymentMethodIds } }, { $set: { user: primaryId } }),
+      GoFundMe.updateMany({ _id: { $in: campaignIds } }, { $set: { userId: primaryId } }),
+      GoFundMe.updateMany({ _id: { $in: approvalCampaignIds } }, { $set: { approvedBy: primaryId } }),
+      Order.updateMany(
+        { _id: { $in: cancellationOrderIds } },
+        { $set: { "cancellationDetails.cancelledBy": primaryId } }
+      ),
+    ]);
+
+    // Remove the now-empty secondary account (frees its unique email/googleId).
+    await User.findByIdAndDelete(secondaryId);
+
+    // Record the merge so it can be reversed later.
+    const log = await MergeLog.create({
+      primaryUser:   { userId: primaryId,   email: primary.email,   name: primary.name },
+      secondaryUser: { userId: secondaryId, email: secondary.email, name: secondary.name },
+      secondarySnapshot,
+      reassigned: { orderIds, paymentMethodIds, campaignIds, approvalCampaignIds, cancellationOrderIds },
+      status: "merged",
+      mergedBy: req.user._id,
+    });
+
+    const summary = {
+      ordersReassigned:         orderIds.length,
+      paymentMethodsReassigned: paymentMethodIds.length,
+      campaignsReassigned:      campaignIds.length,
+      approvalsReassigned:      approvalCampaignIds.length,
+      cancellationsReassigned:  cancellationOrderIds.length,
+    };
+
+    res.json({
+      status: "Success",
+      message: `Merged ${secondary.email} into ${primary.email}`,
+      data: {
+        mergeId:   log._id,
+        primary:   { _id: primaryId,   email: primary.email,   name: primary.name },
+        secondary: { _id: secondaryId, email: secondary.email, name: secondary.name },
+        summary,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "Error", message: "Failed to merge accounts", error: err.message });
+  }
+});
+
+// GET /admin/donors/search-users?search=
+// Search the User collection directly (by name or email) for the merge picker.
+// Unlike GET /admin/donors (which is derived from orders and therefore only lists
+// people who have donated), this returns ALL accounts — including ones with no
+// donations yet — each annotated with its donation count.
+router.get("/search-users", isAdmin, async (req, res) => {
+  try {
+    const q = (req.query.search || "").trim();
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+
+    let filter = {};
+    if (q) {
+      const esc = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const rx = new RegExp(esc, "i");
+      filter = { $or: [{ email: rx }, { name: rx }] };
+    }
+
+    const users = await User.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select("name email phone role")
+      .lean();
+
+    // Annotate each with its (non-failed) donation count.
+    const ids = users.map((u) => u._id);
+    const counts = await Order.aggregate([
+      { $match: { user: { $in: ids }, paymentStatus: { $ne: "failed" } } },
+      { $group: { _id: "$user", count: { $sum: 1 } } },
+    ]);
+    const countMap = new Map(counts.map((c) => [String(c._id), c.count]));
+
+    const result = users.map((u) => ({
+      _id: u._id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      donationCount: countMap.get(String(u._id)) || 0,
+    }));
+
+    res.json({ status: "Success", data: { users: result } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "Error", message: "Failed to search users", error: err.message });
+  }
+});
+
+// GET /admin/donors/merges
+// List merge history (most recent first) so the admin can review/reverse merges.
+router.get("/merges", isAdmin, async (req, res) => {
+  try {
+    const logs = await MergeLog.find({})
+      .sort({ createdAt: -1 })
+      .limit(parseInt(req.query.limit) || 100)
+      .lean();
+
+    const merges = logs.map((l) => ({
+      _id:       l._id,
+      primary:   l.primaryUser,
+      secondary: l.secondaryUser,
+      status:    l.status,
+      mergedAt:  l.createdAt,
+      reversedAt: l.reversedAt,
+      summary: {
+        ordersReassigned:         (l.reassigned?.orderIds || []).length,
+        paymentMethodsReassigned: (l.reassigned?.paymentMethodIds || []).length,
+        campaignsReassigned:      (l.reassigned?.campaignIds || []).length,
+        approvalsReassigned:      (l.reassigned?.approvalCampaignIds || []).length,
+        cancellationsReassigned:  (l.reassigned?.cancellationOrderIds || []).length,
+      },
+    }));
+
+    res.json({ status: "Success", data: { merges } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "Error", message: "Failed to fetch merge history", error: err.message });
+  }
+});
+
+// POST /admin/donors/merges/:id/reverse
+// Undo a previous merge: restore the deleted secondary account verbatim and move the
+// originally-reassigned records back to it.
+router.post("/merges/:id/reverse", isAdmin, async (req, res) => {
+  try {
+    const log = await MergeLog.findById(req.params.id);
+    if (!log) {
+      return res.status(404).json({ status: "Error", message: "Merge record not found" });
+    }
+    if (log.status === "reversed") {
+      return res.status(400).json({ status: "Error", message: "This merge has already been reversed" });
+    }
+
+    const snapshot = log.secondarySnapshot;
+    if (!snapshot || !snapshot._id) {
+      return res.status(400).json({ status: "Error", message: "Merge record is missing the account snapshot and cannot be reversed" });
+    }
+
+    // The primary account must still exist (records currently point to it).
+    const primary = await User.findById(log.primaryUser.userId);
+    if (!primary) {
+      return res.status(409).json({ status: "Error", message: "The primary account no longer exists; cannot reverse this merge" });
+    }
+
+    // The secondary's email/googleId were freed on merge — make sure nothing has
+    // claimed them since, or restoring would violate the unique indexes.
+    const emailTaken = await User.findOne({ email: snapshot.email });
+    if (emailTaken) {
+      return res.status(409).json({
+        status: "Error",
+        message: `Cannot restore "${snapshot.email}" — that email is now used by another account`,
+      });
+    }
+    if (snapshot.googleId) {
+      const googleTaken = await User.findOne({ googleId: snapshot.googleId });
+      if (googleTaken) {
+        return res.status(409).json({ status: "Error", message: "Cannot restore the account — its Google login is now linked to another account" });
+      }
+    }
+
+    const secondaryId = snapshot._id;
+
+    // Restore the secondary user exactly as it was (bypass middleware/validation so the
+    // original _id, password hash and timestamps are preserved).
+    await User.collection.insertOne(snapshot);
+
+    // Move the originally-reassigned records back to the secondary account.
+    const r = log.reassigned || {};
+    await Promise.all([
+      Order.updateMany({ _id: { $in: r.orderIds || [] } }, { $set: { user: secondaryId } }),
+      PaymentMethod.updateMany({ _id: { $in: r.paymentMethodIds || [] } }, { $set: { user: secondaryId } }),
+      GoFundMe.updateMany({ _id: { $in: r.campaignIds || [] } }, { $set: { userId: secondaryId } }),
+      GoFundMe.updateMany({ _id: { $in: r.approvalCampaignIds || [] } }, { $set: { approvedBy: secondaryId } }),
+      Order.updateMany(
+        { _id: { $in: r.cancellationOrderIds || [] } },
+        { $set: { "cancellationDetails.cancelledBy": secondaryId } }
+      ),
+    ]);
+
+    log.status = "reversed";
+    log.reversedAt = new Date();
+    log.reversedBy = req.user._id;
+    await log.save();
+
+    res.json({
+      status: "Success",
+      message: `Reversed merge — restored ${log.secondaryUser.email}`,
+      data: { mergeId: log._id, restored: { _id: secondaryId, email: snapshot.email, name: snapshot.name } },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "Error", message: "Failed to reverse merge", error: err.message });
+  }
+});
 
 // GET /admin/donors/:id
 router.get("/:id", isAdmin, async (req, res) => {
