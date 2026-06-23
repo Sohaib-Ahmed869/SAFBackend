@@ -21,11 +21,28 @@ const normalizeNavPlacement = (navPlacement = {}) => ({
   label: navPlacement.label || "",
 });
 
-const normalizeCta = (cta = {}) => ({
-  label: cta.label || "",
-  url: cta.url || "",
-  openInNewTab: Boolean(cta.openInNewTab),
-});
+const normalizeCta = (cta = {}) => {
+  const linkType = ["internal", "campaign", "external"].includes(cta.linkType)
+    ? cta.linkType
+    : "internal";
+  let url = cta.url || "";
+  // For an external link, guarantee a scheme so the frontend renders a real
+  // outbound <a href> instead of treating it as a relative in-app route.
+  if (
+    linkType === "external" &&
+    url &&
+    !/^[a-z][a-z0-9+.-]*:\/\//i.test(url) &&
+    !/^(mailto:|tel:)/i.test(url)
+  ) {
+    url = `https://${url}`;
+  }
+  return {
+    label: cta.label || "",
+    url,
+    openInNewTab: Boolean(cta.openInNewTab),
+    linkType,
+  };
+};
 
 // Merge the JSON section payload with any newly-uploaded section images.
 // Uploaded files use field names section_image_0, section_image_1, ...

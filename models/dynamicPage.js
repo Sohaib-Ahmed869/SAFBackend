@@ -33,6 +33,13 @@ const dynamicPageSchema = new mongoose.Schema(
       label: { type: String, default: "", trim: true },
       url: { type: String, default: "", trim: true },
       openInNewTab: { type: Boolean, default: false },
+      // How `url` should be opened. Persisted so the admin's explicit choice
+      // survives a save instead of being re-guessed from the URL scheme.
+      linkType: {
+        type: String,
+        enum: ["internal", "campaign", "external"],
+        default: "internal",
+      },
     },
     // Repeatable rich content sections.
     sections: { type: [sectionSchema], default: [] },
