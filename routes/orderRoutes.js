@@ -25,6 +25,7 @@ router.get("/stats", auth, orderController.getOrderStats);
 router.get("/yearly-stats", auth, orderController.getYearlyStats);
 router.get("/available-years", auth, orderController.getAvailableFinancialYears);
 router.get("/statement", auth, orderController.generateStatement);
+router.get("/statement/pdf", auth, orderController.generateStatementPDF);
 router.get("/:id", auth, orderController.getOrderById);
 router.patch("/:id/status", auth, orderController.updateOrderStatus);
 

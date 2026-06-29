@@ -10,6 +10,10 @@ const { upload } = require("../config/s3");
 const path = require("path");
 const axios = require("axios");
 const GoFundMeDonation = require("../models/goFundMeDonations");
+const {
+  buildStatementRows,
+  renderStatementPdf,
+} = require("./annualStatementPdf");
 
 // Donations that opt out of the cross-FY lifetime fallback in annual statements.
 // Why: this recurring sub paid only in FY 2024-2025 but the lifetime fallback was
@@ -3097,6 +3101,191 @@ exports.generateStatement = async (req, res) => {
     res.status(500).json({
       status: "Error",
       message: "Failed to generate statement",
+      error: error.message,
+    });
+  }
+};
+
+// Server-side rendered annual statement PDF. Produces a file that is visually
+// identical to the donor-facing PDF built client-side in
+// SAFFE/src/User/Screens/AnnualDonation.jsx — same layout, same rows
+// (Recurring Payment 1/2..., Installment N of M, P2P Campaign...), same
+// `AS-<startYear>-<endYear>-<id>` reference and Australia/Sydney dates.
+// Reuses the same data-gathering (and Stripe invoice recovery) as
+// generateStatement so the numbers match what the dashboard shows.
+exports.generateStatementPDF = async (req, res) => {
+  try {
+    const { financialYear } = req.query;
+    const isAdminRequest = req.user?.role === "admin" && !!req.query.userId;
+    const targetUserId = isAdminRequest ? req.query.userId : req.user._id;
+
+    let targetUser = req.user;
+    if (isAdminRequest) {
+      targetUser = await User.findById(targetUserId).select(
+        "firstName lastName name email"
+      );
+      if (!targetUser) {
+        return res
+          .status(404)
+          .json({ status: "Error", message: "Donor not found" });
+      }
+    }
+
+    const userId = targetUserId;
+    const targetUserEmail = targetUser.email;
+    const targetUserName =
+      targetUser.firstName || targetUser.lastName
+        ? `${targetUser.firstName || ""} ${targetUser.lastName || ""}`.trim()
+        : targetUser.name || "";
+
+    if (!financialYear || !/^\d{4}-\d{4}$/.test(financialYear)) {
+      return res.status(400).json({
+        status: "Error",
+        message:
+          "Please provide a valid financial year in format YYYY-YYYY (e.g., 2023-2024)",
+      });
+    }
+
+    const [startYear, endYear] = financialYear.split("-");
+    if (parseInt(endYear) !== parseInt(startYear) + 1) {
+      return res.status(400).json({
+        status: "Error",
+        message:
+          "Invalid financial year format. End year must be start year + 1 (e.g., 2023-2024)",
+      });
+    }
+
+    const startDate = new Date(parseInt(startYear), 6, 1); // July 1st
+    const endDate = new Date(parseInt(startYear) + 1, 5, 30, 23, 59, 59); // June 30th
+
+    const orders = await Order.find({
+      user: userId,
+      paymentStatus: { $ne: "failed" },
+      $or: [
+        { createdAt: { $gte: startDate, $lte: endDate } },
+        {
+          paymentType: "recurring",
+          "recurringDetails.paymentHistory": {
+            $elemMatch: { date: { $gte: startDate, $lte: endDate } },
+          },
+        },
+        {
+          paymentType: "installments",
+          "installmentDetails.installmentHistory": {
+            $elemMatch: { date: { $gte: startDate, $lte: endDate } },
+          },
+        },
+      ],
+    }).sort({ createdAt: 1 });
+
+    const goFundMeDonations = await GoFundMeDonation.find({
+      donorEmail: targetUserEmail,
+      createdAt: { $gte: startDate, $lte: endDate },
+      paymentStatus: "completed",
+    }).populate("goFundMeId", "title slug");
+
+    // Recover any missing Stripe invoices for recurring orders so the rendered
+    // recurring rows reflect what was actually charged (idempotent; persists).
+    for (const order of orders) {
+      if (
+        order.paymentType !== "recurring" ||
+        !order.transactionDetails?.stripeSubscriptionId
+      ) {
+        continue;
+      }
+      const recurringPayments = order.recurringDetails?.paymentHistory || [];
+      const hasFY = recurringPayments.some(
+        (p) =>
+          p.date >= startDate &&
+          p.date <= endDate &&
+          p.status === "succeeded"
+      );
+      if (hasFY) continue;
+      try {
+        const invoices = await stripe.invoices.list({
+          subscription: order.transactionDetails.stripeSubscriptionId,
+          status: "paid",
+          limit: 100,
+        });
+        const existingInvoiceIds = new Set(
+          recurringPayments.map((p) => p.invoiceId).filter(Boolean)
+        );
+        const recovered = [];
+        for (const invoice of invoices.data) {
+          if (existingInvoiceIds.has(invoice.id)) continue;
+          const paidAtUnix = invoice.status_transitions?.paid_at;
+          if (!paidAtUnix) continue;
+          recovered.push({
+            date: new Date(paidAtUnix * 1000),
+            amount: (invoice.amount_paid || 0) / 100,
+            invoiceId: invoice.id,
+            status: "succeeded",
+          });
+        }
+        if (recovered.length) {
+          order.recurringDetails.paymentHistory = [
+            ...recurringPayments,
+            ...recovered,
+          ];
+          await order.save();
+          console.log(
+            `[StatementPDF] Recovered ${recovered.length} Stripe invoice(s) for recurring order ${order.donationId}`
+          );
+        }
+      } catch (recoveryErr) {
+        console.error(
+          `[StatementPDF] Stripe recovery failed for order ${order.donationId}:`,
+          recoveryErr.message
+        );
+      }
+    }
+
+    // Normalize to the shape buildStatementRows expects (mirrors the client).
+    const normalizedDonations = orders.map((o) => o.toObject());
+    const normalizedP2P = goFundMeDonations.map((d) => ({
+      _id: d._id,
+      donationId: d.donationId,
+      createdAt: d.createdAt,
+      paymentStatus: d.paymentStatus,
+      amount: d.amount,
+      totalAmount: d.totalAmount,
+      donationType: d.donationType,
+      goFundMe: { title: d.goFundMeId?.title || "Campaign Donation" },
+    }));
+
+    const year = parseInt(endYear);
+    const { tableData, totalDonated } = buildStatementRows(
+      normalizedDonations,
+      normalizedP2P,
+      year
+    );
+
+    if (tableData.length === 0) {
+      return res.status(404).json({
+        status: "Error",
+        message: "No donation data found for the specified financial year",
+      });
+    }
+
+    const pdfBuffer = renderStatementPdf({
+      tableData,
+      totalDonated,
+      year,
+      user: { name: targetUserName, email: targetUserEmail, id: userId },
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="donation_statement_fy_${year - 1}_${year}.pdf"`
+    );
+    res.setHeader("Content-Length", pdfBuffer.length);
+    return res.status(200).send(pdfBuffer);
+  } catch (error) {
+    console.error("Error generating statement PDF:", error);
+    return res.status(500).json({
+      status: "Error",
+      message: "Failed to generate statement PDF",
       error: error.message,
     });
   }
