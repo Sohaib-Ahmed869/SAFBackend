@@ -1,22 +1,27 @@
 /**
- * Admin endpoints for syncing a donor's missing PayPal donations before
- * generating their annual statement.
+ * Admin endpoints for syncing a donor's missing donations (PayPal or bank
+ * transfer) before generating their annual statement.
  *
- *  POST /api/admin/orders/paypal-sync/preview
- *    multipart (file + userId) — parse an uploaded PayPal activity export, OR
+ *  POST /api/admin/orders/donation-sync/preview
+ *    multipart (file + userId) — parse an uploaded PayPal activity export or
+ *    a filled-out SAF donation template (bank/PayPal), OR
  *    JSON { userId, financialYear? | startDate?/endDate?, paypalEmail? } —
  *    pull from the PayPal Transaction Search API.
  *    Returns the normalised transactions annotated with what commit would do.
  *
- *  POST /api/admin/orders/paypal-sync/commit
+ *  POST /api/admin/orders/donation-sync/commit
  *    JSON { userId, transactions } — transactions are the rows the admin kept
  *    from the preview. Every duplicate check re-runs on commit, so this is
  *    idempotent and safe against stale previews.
+ *
+ *  GET /api/admin/orders/donation-sync/template?method=bank|paypal
+ *    Download the example .xlsx admins fill out and upload back.
  */
 
 const User = require("../../models/user");
 const {
-  parseActivityExport,
+  parseUploadedFile,
+  buildTemplateWorkbook,
   fetchPaypalTransactions,
   previewForUser,
   commitForUser,
@@ -77,19 +82,24 @@ exports.previewPaypalSync = async (req, res) => {
     let notes = [];
 
     if (req.file) {
-      source = "file";
-      const parsed = parseActivityExport(req.file.buffer);
+      const parsed = parseUploadedFile(req.file.buffer);
+      source = parsed.format; // 'paypal-export' | 'saf-template'
       transactions = parsed.transactions;
       if (parsed.ignored.length) {
         notes.push(
-          `${parsed.ignored.length} row(s) in the file were ignored (not completed donation credits).`
+          `${parsed.ignored.length} row(s) in the file were ignored: ` +
+            parsed.ignored
+              .slice(0, 5)
+              .map((r) => `row ${r.row} (${r.reason})`)
+              .join("; ") +
+            (parsed.ignored.length > 5 ? "; …" : "")
         );
       }
       if (transactions.length === 0) {
         return res.status(400).json({
           status: "Error",
           message:
-            "No completed donation payments found in the file. Make sure it is a PayPal activity export (.xlsx or .csv).",
+            "No usable donation rows found in the file. Upload a PayPal activity export, or fill out the SAF template downloaded from this screen.",
           ignored: parsed.ignored,
         });
       }
@@ -150,11 +160,13 @@ exports.commitPaypalSync = async (req, res) => {
         message: "transactions array is required — run a preview first",
       });
     }
+    // txnId is optional (bank/template rows may have no reference), but every
+    // row needs a date and a positive amount.
     for (const txn of transactions) {
-      if (!txn.txnId || !txn.date || !(parseFloat(txn.gross) > 0)) {
+      if (!txn.date || Number.isNaN(new Date(txn.date).getTime()) || !(parseFloat(txn.gross) > 0)) {
         return res.status(400).json({
           status: "Error",
-          message: `Invalid transaction in payload (txnId "${txn.txnId || "?"}") — re-run the preview`,
+          message: `Invalid transaction in payload (${txn.txnId || txn.rowKey || "?"}) — re-run the preview`,
         });
       }
     }
@@ -171,10 +183,33 @@ exports.commitPaypalSync = async (req, res) => {
       results,
     });
   } catch (error) {
-    console.error("PayPal sync commit failed:", error);
+    console.error("Donation sync commit failed:", error);
     return res.status(500).json({
       status: "Error",
-      message: error.message || "Failed to sync PayPal donations",
+      message: error.message || "Failed to sync donations",
+    });
+  }
+};
+
+// Serve the fill-out example sheet (?method=bank|paypal).
+exports.downloadSyncTemplate = (req, res) => {
+  try {
+    const method = req.query.method === "paypal" ? "paypal" : "bank";
+    const buffer = buildTemplateWorkbook(method);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=saf-${method}-donations-template.xlsx`
+    );
+    return res.send(buffer);
+  } catch (error) {
+    console.error("Template download failed:", error);
+    return res.status(500).json({
+      status: "Error",
+      message: "Failed to generate the template",
     });
   }
 };

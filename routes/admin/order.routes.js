@@ -7,6 +7,7 @@ const isAdmin = require("../../middleware/isAdmin");
 const {
   previewPaypalSync,
   commitPaypalSync,
+  downloadSyncTemplate,
 } = require("../../controllers/admin/paypalSyncController");
 const {
   getDashboardStats,
@@ -31,23 +32,33 @@ router.get("/donations/:id", isAdmin, getDonationById); // Then the general ID r
 router.put("/donations/:id/status", isAdmin, updateDonationStatus); // Status update route
 router.get("/export", isAdmin, getDonationsExport);
 
-// PayPal donation sync (recover donations lost to failed webhooks).
-// Preview accepts an optional PayPal activity export upload in memory —
-// it is parsed and discarded, never written to disk/S3.
-const paypalExportUpload = multer({
+// Donation sync (recover PayPal/bank donations missing from the DB).
+// Preview accepts an optional spreadsheet upload in memory — a PayPal activity
+// export or a filled-out SAF template. It is parsed and discarded, never
+// written to disk/S3.
+const syncFileUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ok = [".xlsx", ".xls", ".csv"].includes(
       path.extname(file.originalname || "").toLowerCase()
     );
-    cb(ok ? null : new Error("Only .xlsx, .xls or .csv PayPal exports are allowed"), ok);
+    cb(ok ? null : new Error("Only .xlsx, .xls or .csv files are allowed"), ok);
   },
 });
+router.get("/donation-sync/template", isAdmin, downloadSyncTemplate);
+router.post(
+  "/donation-sync/preview",
+  isAdmin,
+  syncFileUpload.single("file"),
+  previewPaypalSync
+);
+router.post("/donation-sync/commit", isAdmin, commitPaypalSync);
+// Aliases from when the feature was PayPal-only — keep old clients working.
 router.post(
   "/paypal-sync/preview",
   isAdmin,
-  paypalExportUpload.single("file"),
+  syncFileUpload.single("file"),
   previewPaypalSync
 );
 router.post("/paypal-sync/commit", isAdmin, commitPaypalSync);

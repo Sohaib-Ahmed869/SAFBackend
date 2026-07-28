@@ -1,15 +1,18 @@
 /**
- * PayPal donation sync engine.
+ * Donation sync engine (PayPal + bank transfers).
  *
- * Recovers PayPal donations that never made it into Mongo (failed webhooks)
- * so a donor's annual statement is complete. Two sources:
+ * Recovers donations that never made it into Mongo (failed PayPal webhooks,
+ * direct bank deposits) so a donor's annual statement is complete. Sources:
  *
  *  - an uploaded PayPal activity export (.xlsx / .csv, the file donors or
- *    finance download from PayPal), parsed with SheetJS, or
+ *    finance download from PayPal), parsed with SheetJS,
+ *  - an uploaded SAF donation template (.xlsx / .csv) — the fill-out sheet
+ *    admins download from the same screen; carries a "Payment Method" column
+ *    so one parser covers both bank and PayPal manual entries,
  *  - the PayPal Transaction Search API (/v1/reporting/transactions),
  *    filtered to the donor's email(s).
  *
- * Both sources normalise into the same transaction shape, which is then
+ * All sources normalise into the same transaction shape, which is then
  * annotated against the DB (previewForUser) and, once the admin confirms,
  * written (commitForUser). Commit re-runs every duplicate check, so a stale
  * preview can never double-insert — same idempotency rules as
@@ -60,6 +63,18 @@ const pick = (row, names) => {
   return null;
 };
 
+// Template headers carry hints like "Date (DD/MM/YYYY)" and admins may trim
+// them — match on the start of the header instead of the full text.
+const pickFuzzy = (row, bases) => {
+  for (const base of bases) {
+    const key = Object.keys(row).find((k) =>
+      k.trim().toLowerCase().startsWith(base.toLowerCase())
+    );
+    if (key !== undefined && row[key] !== null && row[key] !== "") return row[key];
+  }
+  return null;
+};
+
 const TZ_OFFSET_HOURS = {
   AEST: 10,
   AEDT: 11,
@@ -78,10 +93,35 @@ const parseMoney = (value) => {
   return Number.isFinite(n) ? n : null;
 };
 
+const parseTimeParts = (timeStr) => {
+  const tm = String(timeStr || "").trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!tm) return null;
+  return { hh: Number(tm[1]), mm: Number(tm[2]), ss: Number(tm[3] || 0) };
+};
+
+// "2024-08-08" — how date cells come out when the workbook is read with
+// cellDates + dateNF (see parseUploadedFile). Unambiguous, try it first.
+const parseIsoDateParts = (dateStr) => {
+  const m = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
+};
+
+const buildLocalDate = ({ year, month, day }, time, offsetHours) => {
+  const { hh, mm, ss } = time || { hh: 0, mm: 0, ss: 0 };
+  return new Date(Date.UTC(year, month - 1, day, hh, mm, ss) - offsetHours * 3600 * 1000);
+};
+
 // PayPal exports use M/D/YY (US order — confirmed by rows like 12/19/24).
 // If the first number can't be a month, fall back to D/M/YY.
 const parseExportDate = (dateStr, timeStr, tzStr) => {
   if (!dateStr) return null;
+  const offset = TZ_OFFSET_HOURS[String(tzStr || "").trim().toUpperCase()] ?? 10;
+  const time = parseTimeParts(timeStr);
+
+  const iso = parseIsoDateParts(dateStr);
+  if (iso) return buildLocalDate(iso, time, offset);
+
   const dm = String(dateStr).trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
   if (!dm) return null;
   let [, first, second, year] = dm.map(Number);
@@ -89,17 +129,29 @@ const parseExportDate = (dateStr, timeStr, tzStr) => {
   let day = second;
   if (month > 12 && day <= 12) [month, day] = [day, month];
   if (year < 100) year += 2000;
+  return buildLocalDate({ year, month, day }, time, offset);
+};
 
-  let hh = 0, mm = 0, ss = 0;
-  const tm = String(timeStr || "").trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (tm) {
-    hh = Number(tm[1]);
-    mm = Number(tm[2]);
-    ss = Number(tm[3] || 0);
-  }
+// SAF template dates are hand-typed by Australian admins: DD/MM/YYYY
+// (day first — the opposite of PayPal's export). ISO also accepted. When no
+// time is given, noon AEST keeps the donation inside the right calendar day
+// and financial year regardless of timezone rounding.
+const parseTemplateDate = (dateStr, timeStr) => {
+  if (!dateStr) return null;
+  const time = parseTimeParts(timeStr) || { hh: 12, mm: 0, ss: 0 };
 
-  const offset = TZ_OFFSET_HOURS[String(tzStr || "").trim().toUpperCase()] ?? 10;
-  return new Date(Date.UTC(year, month - 1, day, hh, mm, ss) - offset * 3600 * 1000);
+  const iso = parseIsoDateParts(dateStr);
+  if (iso) return buildLocalDate(iso, time, 10);
+
+  const dm = String(dateStr).trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (!dm) return null;
+  let [, first, second, year] = dm.map(Number);
+  let day = first;
+  let month = second;
+  if (month > 12 && day <= 12) [month, day] = [day, month];
+  if (month > 12 || day > 31) return null;
+  if (year < 100) year += 2000;
+  return buildLocalDate({ year, month, day }, time, 10);
 };
 
 // Row types that are never donations (fees, transfers, conversions, refunds).
@@ -122,15 +174,11 @@ const titleIfNamed = (raw) => {
 };
 
 /**
- * Parse a PayPal activity export (.xlsx/.xls/.csv buffer) into normalised
- * transactions. Returns { transactions, ignored } where ignored explains every
- * row that was not treated as a donation.
+ * Parse the rows of a PayPal activity export into normalised transactions.
+ * Returns { transactions, ignored } where ignored explains every row that was
+ * not treated as a donation.
  */
-const parseActivityExport = (buffer) => {
-  const wb = XLSX.read(buffer, { type: "buffer" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: null });
-
+const parsePaypalExportRows = (rows) => {
   const transactions = [];
   const ignored = [];
 
@@ -196,11 +244,105 @@ const parseActivityExport = (buffer) => {
       address: street || city || state || postcode
         ? { street, city, state, postcode }
         : null,
+      paymentMethod: "paypal",
       source: "file",
     });
   });
 
   return { transactions, ignored };
+};
+
+/**
+ * Parse rows of the SAF donation template (downloaded from the admin screen
+ * and filled out by hand). The "Payment Method" column decides whether each
+ * row becomes a bank or PayPal donation.
+ */
+const parseSafTemplateRows = (rows) => {
+  const transactions = [];
+  const ignored = [];
+
+  rows.forEach((row, i) => {
+    const rowNo = i + 2; // 1-based + header row
+    const skip = (reason) => ignored.push({ row: rowNo, reason });
+
+    const methodRaw = String(pickFuzzy(row, ["Payment Method"]) || "").trim().toLowerCase();
+    const method = /paypal/.test(methodRaw)
+      ? "paypal"
+      : /bank|eft|transfer|deposit/.test(methodRaw)
+        ? "bank"
+        : null;
+    if (!method)
+      return skip(
+        methodRaw
+          ? `unrecognised payment method "${methodRaw}" (use "bank" or "paypal")`
+          : "payment method is empty (use \"bank\" or \"paypal\")"
+      );
+
+    const gross = parseMoney(pickFuzzy(row, ["Amount"]));
+    if (!gross || gross <= 0) return skip("amount is missing or not positive");
+
+    const date = parseTemplateDate(pickFuzzy(row, ["Date"]), pickFuzzy(row, ["Time"]));
+    if (!date) return skip("could not read the date (use DD/MM/YYYY)");
+
+    const txnId = pickFuzzy(row, ["Transaction ID", "Reference"]);
+    const fee = Math.abs(parseMoney(pickFuzzy(row, ["Fee"])) || 0);
+
+    transactions.push({
+      txnId: txnId ? String(txnId).trim() : null,
+      date: date.toISOString(),
+      gross,
+      fee,
+      net: Math.round((gross - fee) * 100) / 100,
+      currency: "AUD",
+      payerEmail: String(pickFuzzy(row, ["Donor Email", "Email"]) || "")
+        .trim()
+        .toLowerCase(),
+      payerName: pickFuzzy(row, ["Donor Name"]) || null,
+      title:
+        pickFuzzy(row, ["Cause"]) ||
+        (method === "bank" ? "Bank Transfer Donation" : "PayPal Donation"),
+      type: "Manual entry",
+      subscriptionId: null,
+      address: null,
+      notes: pickFuzzy(row, ["Notes"]) || null,
+      paymentMethod: method,
+      source: "template",
+    });
+  });
+
+  return { transactions, ignored };
+};
+
+/**
+ * Parse any supported upload (.xlsx/.xls/.csv buffer): a PayPal activity
+ * export or the SAF donation template — detected by header row. Returns
+ * { format, transactions, ignored }.
+ */
+const parseUploadedFile = (buffer) => {
+  // cellDates + dateNF renders real date cells as unambiguous ISO strings
+  // (hand-typed text like "8/8/24" or "15/03/2025" comes through untouched
+  // and is handled by the format-specific date parsers).
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {
+    raw: false,
+    defval: null,
+    dateNF: "yyyy-mm-dd",
+  });
+  if (rows.length === 0) {
+    throw new Error("The file has no data rows below the header.");
+  }
+
+  const headers = Object.keys(rows[0]).map((h) => h.trim().toLowerCase());
+  if (headers.some((h) => h.startsWith("payment method"))) {
+    return { format: "saf-template", ...parseSafTemplateRows(rows) };
+  }
+  if (headers.includes("gross") && headers.includes("status")) {
+    return { format: "paypal-export", ...parsePaypalExportRows(rows) };
+  }
+  throw new Error(
+    "Unrecognised file format. Upload a PayPal activity export, or download the SAF template from this screen, fill it out and upload it."
+  );
 };
 
 // ------------------------ PayPal Transaction Search ------------------------
@@ -294,6 +436,7 @@ const fetchPaypalTransactions = async ({ startDate, endDate, emails }) => {
               ? info.paypal_reference_id
               : null,
           address: null,
+          paymentMethod: "paypal",
           source: "paypal",
         });
       }
@@ -320,13 +463,14 @@ const generateUniqueDonationId = async () => {
   throw new Error("Could not generate unique donationId");
 };
 
-// Every place a PayPal transaction id could already live on an order.
+// Every place a transaction id / bank reference could already live on an order.
 const findOrderByTxnId = (txnId) =>
   Order.findOne({
     $or: [
       { "paypalDetails.paymentId": txnId },
       { "paypalDetails.lastPaymentId": txnId },
       { "transactionDetails.paypal_transaction_id": txnId },
+      { "transactionDetails.bank_reference": txnId },
       { externalId: txnId },
       { "recurringDetails.paymentHistory.invoiceId": txnId },
     ],
@@ -349,7 +493,9 @@ const findRecurringOrderBySubscriptionId = (subscriptionId) =>
  *           existingDonationId?, recurringOrderId? }.
  */
 const classifyTransaction = async (user, txn) => {
-  const byTxn = await findOrderByTxnId(txn.txnId);
+  // Bank/template rows may have no reference id — then only the
+  // amount-within-a-day check below can catch duplicates.
+  const byTxn = txn.txnId ? await findOrderByTxnId(txn.txnId) : null;
   if (byTxn) {
     return {
       action: "skip",
@@ -427,6 +573,8 @@ const previewForUser = async (user, transactions) => {
     rows.push({
       ...txn,
       ...verdict,
+      // Stable key for the UI's selection — template rows can lack a txnId.
+      rowKey: txn.txnId || `row-${rows.length + 1}`,
       emailMatch: !txn.payerEmail || txn.payerEmail === userEmail,
     });
   }
@@ -436,6 +584,26 @@ const previewForUser = async (user, transactions) => {
 const buildOneTimeOrder = (user, txn, donationId) => {
   const when = new Date(txn.date);
   const address = txn.address || user.address || {};
+  const method = txn.paymentMethod === "bank" ? "bank" : "paypal";
+
+  const transactionDetails =
+    method === "paypal"
+      ? {
+          ...(txn.txnId ? { paypal_transaction_id: txn.txnId } : {}),
+          paypal_gross: txn.gross,
+          ...(txn.fee ? { paypal_fee: txn.fee, paypal_net: txn.net } : {}),
+          currency: txn.currency,
+          ...(txn.subscriptionId ? { subscription_id: txn.subscriptionId } : {}),
+          ...(txn.notes ? { notes: txn.notes } : {}),
+          source: `donation-sync-${txn.source}`,
+        }
+      : {
+          ...(txn.txnId ? { bank_reference: txn.txnId } : {}),
+          currency: txn.currency,
+          ...(txn.notes ? { notes: txn.notes } : {}),
+          source: `donation-sync-${txn.source}`,
+        };
+
   return new Order({
     user: user._id,
     donationId,
@@ -455,27 +623,23 @@ const buildOneTimeOrder = (user, txn, donationId) => {
       },
       agreeToMessages: false,
     },
-    paymentMethod: "paypal",
+    paymentMethod: method,
     paymentStatus: "completed",
     totalAmount: txn.gross,
     lastPaymentDate: when,
-    paypalDetails: {
-      paymentId: txn.txnId,
-      status: "COMPLETED",
-      lastPaymentDate: when,
-      lastPaymentId: txn.txnId,
-      lastUpdated: when,
-      paymentCompleted: true,
-    },
-    transactionDetails: {
-      paypal_transaction_id: txn.txnId,
-      paypal_gross: txn.gross,
-      paypal_fee: txn.fee,
-      paypal_net: txn.net,
-      currency: txn.currency,
-      ...(txn.subscriptionId ? { subscription_id: txn.subscriptionId } : {}),
-      source: `paypal-donation-sync-${txn.source}`,
-    },
+    ...(method === "paypal" && txn.txnId
+      ? {
+          paypalDetails: {
+            paymentId: txn.txnId,
+            status: "COMPLETED",
+            lastPaymentDate: when,
+            lastPaymentId: txn.txnId,
+            lastUpdated: when,
+            paymentCompleted: true,
+          },
+        }
+      : {}),
+    transactionDetails,
   });
 };
 
@@ -545,8 +709,49 @@ const commitForUser = async (user, transactions) => {
   return results;
 };
 
+// ------------------------------ fill-out templates -------------------------
+
+const TEMPLATE_HEADERS = [
+  "Payment Method (bank or paypal)",
+  "Date (DD/MM/YYYY)",
+  "Time (HH:MM, optional)",
+  "Amount (AUD)",
+  "Fee (AUD, optional)",
+  "Transaction ID / Reference (optional)",
+  "Donor Email (optional)",
+  "Donor Name (optional)",
+  "Cause (optional)",
+  "Notes (optional)",
+];
+
+const TEMPLATE_SAMPLES = {
+  bank: [
+    ["bank", "15/03/2025", "", "250.00", "", "NAB-REF-123456", "donor@example.com", "John Smith", "Zakat", "Direct deposit shown on bank statement"],
+    ["bank", "02/04/2025", "14:30", "100.00", "", "", "", "", "Sadaqa", "Reference unknown — duplicate check uses amount and date"],
+  ],
+  paypal: [
+    ["paypal", "15/03/2025", "", "303.64", "3.64", "3SR51322K99789303", "donor@example.com", "John Smith", "Educate a Child", "17-character ID from the PayPal transaction"],
+    ["paypal", "02/04/2025", "18:45", "101.42", "1.42", "2DM404134H657511V", "", "", "Sadaqa", ""],
+  ],
+};
+
+/**
+ * Build the example .xlsx admins download, fill out and upload back
+ * (method: 'bank' | 'paypal' — same columns, different sample rows).
+ * Returns a Buffer.
+ */
+const buildTemplateWorkbook = (method) => {
+  const rows = TEMPLATE_SAMPLES[method] || TEMPLATE_SAMPLES.bank;
+  const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS, ...rows]);
+  ws["!cols"] = [28, 18, 18, 12, 16, 32, 26, 20, 24, 40].map((wch) => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Donations");
+  return XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+};
+
 module.exports = {
-  parseActivityExport,
+  parseUploadedFile,
+  buildTemplateWorkbook,
   fetchPaypalTransactions,
   previewForUser,
   commitForUser,
