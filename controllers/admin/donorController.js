@@ -8,6 +8,9 @@ const PaymentMethod = require("../../models/paymentMethods");
 const GoFundMe   = require("../../models/goFundMe");
 const MergeLog   = require("../../models/mergeLog");
 const stripeLib  = require("stripe");
+const crypto     = require("crypto");
+const bcrypt     = require("bcrypt");
+const { sendEmail } = require("../../services/emailUtil");
 
 // Helper: calculate full expected amount for recurring orders
 function calculateRecurringTotalAmount(order) {
@@ -250,7 +253,38 @@ router.get("/", isAdmin, async (req, res) => {
       };
     });
     donors = donors.filter(Boolean);
-    console.log(donors);
+
+    // Manually added donor records (created from the admin panel) have no
+    // orders yet, so the order-derived list above misses them. Append them
+    // with zero totals so they can be found and their donations synced.
+    const manualUsers = await User.find({ createdByAdmin: true })
+      .select("name email phone address country dateOfBirth")
+      .lean();
+    manualUsers.forEach((user) => {
+      if (map.has(user._id.toString())) return; // already listed via orders
+      const [firstName, ...rest] = (user.name || "").trim().split(" ");
+      const addr = user.address || {};
+      donors.push({
+        _id:               user._id,
+        name:              user.name,
+        firstName,
+        lastName:          rest.join(" "),
+        email:             user.email,
+        phone:             user.phone,
+        address:           user.address,
+        fullAddress:       [addr.street, addr.city, addr.state, addr.postalCode]
+                             .filter(Boolean).join(", "),
+        country:           user.country,
+        dateOfBirth:       user.dateOfBirth,
+        totalPaid:         0,
+        totalExpected:     0,
+        donationCount:     0,
+        firstDonationDate: null,
+        lastDonationDate:  null,
+        donationTypes:     [],
+        donationType:      "one-time",
+      });
+    });
 
     // 5) search
     if (search) {
@@ -331,6 +365,135 @@ router.get("/lookup", isAdmin, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ status: "Error", message: "Failed to look up user", error: err.message });
+  }
+});
+
+// POST /admin/donors/
+// Manually create a donor record for someone who gave off-site (bank transfer,
+// PayPal outside the website) and therefore has no account. The account gets a
+// random temporary password; the donation-sync flow can then attach their past
+// donations. Donors with no known email get a unique placeholder address and
+// are flagged isPlaceholderEmail so mail is never sent to them.
+// Body: { name, email?, phone?, address?, sendWelcomeEmail? }
+router.post("/", isAdmin, async (req, res) => {
+  try {
+    const name = (req.body.name || "").trim();
+    let email = (req.body.email || "").trim().toLowerCase();
+    const phone = (req.body.phone || "").trim();
+    const address = req.body.address || {};
+
+    if (!name) {
+      return res.status(400).json({ status: "Error", message: "Name is required" });
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ status: "Error", message: "Invalid email address" });
+    }
+
+    const isPlaceholderEmail = !email;
+    if (isPlaceholderEmail) {
+      email = `donor-${crypto.randomBytes(6).toString("hex")}@noemail.shahidafridifoundation.org.au`;
+    } else {
+      const existing = await User.findOne({ email }).lean();
+      if (existing) {
+        const donationCount = await Order.countDocuments({
+          user: existing._id,
+          paymentStatus: { $ne: "failed" },
+        });
+        return res.status(409).json({
+          status: "Error",
+          message: "A user with that email already exists",
+          data: {
+            existing: {
+              _id: existing._id,
+              name: existing.name,
+              email: existing.email,
+              phone: existing.phone,
+              donationCount,
+            },
+          },
+        });
+      }
+    }
+
+    const password = crypto.randomBytes(8).toString("hex");
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = await User.create({
+      name,
+      email,
+      password: hashedPassword,
+      phone: phone || undefined,
+      address: {
+        street: (address.street || "").trim() || undefined,
+        city: (address.city || "").trim() || undefined,
+        state: (address.state || "").trim() || undefined,
+        postalCode: (address.postalCode || "").trim() || undefined,
+      },
+      role: "user",
+      isTemporaryPassword: true,
+      isPlaceholderEmail,
+      createdByAdmin: true,
+      ...(isPlaceholderEmail && {
+        notifications: {
+          emailNotifications: false,
+          donationReceipts: false,
+          monthlyNewsletter: false,
+          impactUpdates: false,
+        },
+      }),
+    });
+
+    let welcomeEmailSent = false;
+    if (!isPlaceholderEmail && req.body.sendWelcomeEmail) {
+      const loginUrl = "https://shahidafridifoundation.org.au/login";
+      const emailBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
+          <h2 style="color: #4CAF50; text-align: center;">Welcome to the Shahid Afridi Foundation</h2>
+          <p>Dear ${name},</p>
+          <p>Thank you for supporting the Shahid Afridi Foundation. We've created an account for you so you can track your donations and download your annual tax statements.</p>
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>Your Account Details:</strong></p>
+            <p>Email: ${email}</p>
+            <p>Password: ${password}</p>
+            <p style="font-size: 12px; color: #666;">You will be asked to choose a new password on your first login.</p>
+          </div>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${loginUrl}" style="background-color: #4CAF50; color: white; padding: 12px 25px; text-decoration: none; border-radius: 4px; font-weight: bold;">Login to Your Account</a>
+          </div>
+          <p>If you have any questions or need assistance, please don't hesitate to contact our team.</p>
+          <p>Warm regards,<br>The Shahid Afridi Foundation Team</p>
+          <div style="font-size: 12px; color: #666; border-top: 1px solid #e0e0e0; margin-top: 20px; padding-top: 20px;">
+            <p>This is an automated email. Please do not reply to this message.</p>
+          </div>
+        </div>`;
+      try {
+        const result = await sendEmail(
+          email,
+          emailBody,
+          "Welcome to Shahid Afridi Foundation - Your Account Details"
+        );
+        welcomeEmailSent = Boolean(result?.success ?? true);
+      } catch (emailErr) {
+        console.error("Failed to send welcome email:", emailErr);
+      }
+    }
+
+    res.status(201).json({
+      status: "Success",
+      message: `Donor record created for ${name}`,
+      data: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        address: user.address,
+        isPlaceholderEmail,
+        welcomeEmailSent,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "Error", message: "Failed to create donor", error: err.message });
   }
 });
 

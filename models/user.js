@@ -72,6 +72,19 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    // Set for admin-created donor records with no known email address. The
+    // stored email is a generated placeholder — never send mail to it.
+    isPlaceholderEmail: {
+      type: Boolean,
+      default: false,
+    },
+    // Donor record created manually from the admin panel (off-site donor).
+    // The admin donors list includes these even before any donation is synced,
+    // since that list is otherwise derived from orders.
+    createdByAdmin: {
+      type: Boolean,
+      default: false,
+    },
     authProvider: {
       type: String,
       enum: ["local", "google"],
