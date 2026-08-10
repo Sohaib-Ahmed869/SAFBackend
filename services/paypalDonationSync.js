@@ -697,11 +697,13 @@ const commitForUser = async (user, transactions) => {
     await order.save();
     // Mongoose stamped "now"; move timestamps back to the real payment time so
     // the statement's FY range query (which filters on createdAt) sees it.
+    // Must go through the native driver: timestamps mark createdAt immutable,
+    // so a Mongoose updateOne silently drops the backdate (see
+    // scripts/fixBackfillDates.js for the earlier instance of this bug).
     const when = new Date(txn.date);
-    await Order.updateOne(
+    await Order.collection.updateOne(
       { _id: order._id },
-      { $set: { createdAt: when, updatedAt: when } },
-      { timestamps: false }
+      { $set: { createdAt: when, updatedAt: when } }
     );
     results.push({ txnId: txn.txnId, status: "inserted", donationId });
   }

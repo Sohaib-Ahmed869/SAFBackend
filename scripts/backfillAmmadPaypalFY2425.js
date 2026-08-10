@@ -162,10 +162,11 @@ async function main() {
     await order.save();
     // Mongoose timestamps stamped "now" on save; move both back to the real
     // payment time so FY-range queries on createdAt pick this order up.
-    await Order.updateOne(
+    // Native driver required — timestamps mark createdAt immutable, so a
+    // Mongoose updateOne silently drops the backdate (see fixBackfillDates.js).
+    await Order.collection.updateOne(
       { _id: order._id },
-      { $set: { createdAt: when, updatedAt: when } },
-      { timestamps: false }
+      { $set: { createdAt: when, updatedAt: when } }
     );
     console.log(`  inserted donationId=${donationId} _id=${order._id}`);
     inserted++;
