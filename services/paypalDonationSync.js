@@ -495,13 +495,38 @@ const findRecurringOrderBySubscriptionId = (subscriptionId) =>
 const classifyTransaction = async (user, txn) => {
   // Bank/template rows may have no reference id — then only the
   // amount-within-a-day check below can catch duplicates.
-  const byTxn = txn.txnId ? await findOrderByTxnId(txn.txnId) : null;
-  if (byTxn) {
-    return {
-      action: "skip",
-      reason: "transaction ID already recorded",
-      existingDonationId: byTxn.donationId,
-    };
+  if (txn.txnId && txn.paymentMethod === "bank") {
+    // Bank "references" are statement description lines and repeat across
+    // months (e.g. "DEPOSIT <NAME> Educate 4 children" on every monthly
+    // deposit), so a reference match alone is not proof of a duplicate —
+    // the amount and date must line up too.
+    const when = new Date(txn.date);
+    const candidates = await Order.find({
+      "transactionDetails.bank_reference": txn.txnId,
+    }).select("donationId totalAmount createdAt lastPaymentDate");
+    const dup = candidates.find((o) => {
+      const orderWhen = new Date(o.lastPaymentDate || o.createdAt);
+      return (
+        Math.abs((o.totalAmount || 0) - txn.gross) < 0.005 &&
+        Math.abs(orderWhen - when) <= MS_PER_DAY
+      );
+    });
+    if (dup) {
+      return {
+        action: "skip",
+        reason: "same reference, amount and date already recorded",
+        existingDonationId: dup.donationId,
+      };
+    }
+  } else if (txn.txnId) {
+    const byTxn = await findOrderByTxnId(txn.txnId);
+    if (byTxn) {
+      return {
+        action: "skip",
+        reason: "transaction ID already recorded",
+        existingDonationId: byTxn.donationId,
+      };
+    }
   }
 
   if (txn.subscriptionId) {
