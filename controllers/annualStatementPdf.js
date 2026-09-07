@@ -124,6 +124,13 @@ const buildStatementRows = (donations, p2pDonations, year) => {
 
   const tableData = [];
 
+  // The PayPal controller writes installments with `paymentDate`, which is not in
+  // the Order schema and so only survives on natively-written documents. Row
+  // rendering and the total must resolve the date identically, or the printed
+  // lines will not add up to the printed total.
+  const resolveInstallmentDate = (installment, donation) =>
+    installment.date || installment.paymentDate || donation.createdAt;
+
   const sortedDonations = [...financialYearDonations].sort(
     (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
   );
@@ -148,9 +155,17 @@ const buildStatementRows = (donations, p2pDonations, year) => {
       donation.installmentDetails.installmentHistory
         .filter((installment) => installment.status === "completed")
         .forEach((installment) => {
+          const installmentDate = resolveInstallmentDate(installment, donation);
+
+          // Only list installments actually paid in this FY. The total below
+          // already filters this way; without it a row prints that the total
+          // does not include.
+          if (!isInRange(installmentDate)) return;
+
           const installmentAmount = parseFloat(installment.amount);
           tableData.push({
-            donation_date: formatDate(installment.date || donation.createdAt),
+            transaction_date: new Date(installmentDate),
+            donation_date: formatDate(installmentDate),
             donation_id: donationId,
             description: `Installment ${installment.installmentNumber} of ${donation.installmentDetails.numberOfInstallments}: ${donation.items[0]?.title || "Donation"}`,
             payment_type: "Installment",
@@ -179,6 +194,7 @@ const buildStatementRows = (donations, p2pDonations, year) => {
         toRender.forEach((payment, index) => {
           const paymentAmount = payment.amount || donation.recurringDetails.amount;
           tableData.push({
+            transaction_date: new Date(payment.date || donation.createdAt),
             donation_date: formatDate(payment.date || donation.createdAt),
             donation_id: donationId,
             description: `Recurring Payment ${index + 1}: ${donation.items[0]?.title || "Recurring Donation"}`,
@@ -194,6 +210,7 @@ const buildStatementRows = (donations, p2pDonations, year) => {
       ) {
         const amount = donation.recurringDetails?.amount || donation.totalAmount;
         tableData.push({
+          transaction_date: new Date(donation.createdAt),
           donation_date: formatDate(donation.createdAt),
           donation_id: donationId,
           description: `Recurring Payment 1: ${donation.items[0]?.title || "Recurring Donation"}`,
@@ -215,6 +232,7 @@ const buildStatementRows = (donations, p2pDonations, year) => {
             : 0;
           const itemTotal = item.price * (item.quantity || 1) + adminCost;
           tableData.push({
+            transaction_date: new Date(donation.createdAt),
             donation_date: formatDate(donation.createdAt),
             donation_id: donationId,
             description,
@@ -235,6 +253,7 @@ const buildStatementRows = (donations, p2pDonations, year) => {
     const amount = donation.totalAmount || donation.amount || 0;
     const p2pDonationType = donation.donationType || "P2P";
     tableData.push({
+      transaction_date: new Date(donation.createdAt),
       donation_date: formatDate(donation.createdAt),
       donation_id: donationId,
       description: `P2P Campaign: ${campaignTitle}`,
@@ -243,6 +262,12 @@ const buildStatementRows = (donations, p2pDonations, year) => {
       amount: `$${formatCurrency(amount)}`,
     });
   });
+
+  // Sort every transaction by the date it actually happened, most recent first.
+  // Rows are built per donation - and one donation can contribute several rows
+  // spread across the year, while P2P rows were appended after all the others -
+  // so the table has to be ordered once it is assembled, not by donation date.
+  tableData.sort((a, b) => b.transaction_date - a.transaction_date);
 
   // Total — mirror the row-rendering logic so the printed total matches the rows.
   const totalDonated =
@@ -253,12 +278,8 @@ const buildStatementRows = (donations, p2pDonations, year) => {
       ) {
         const completedInstallments =
           donation.installmentDetails.installmentHistory.filter((installment) => {
-            const installmentDate = new Date(installment.date || donation.createdAt);
-            return (
-              installment.status === "completed" &&
-              installmentDate >= startDate &&
-              installmentDate <= endDate
-            );
+            const installmentDate = resolveInstallmentDate(installment, donation);
+            return installment.status === "completed" && isInRange(installmentDate);
           });
         return (
           sum +
