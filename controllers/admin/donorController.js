@@ -873,4 +873,286 @@ router.get("/:id", isAdmin, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Transactions for a single donor
+//
+// A donor's statement is a list of TRANSACTIONS, not of orders: a one-time
+// donation is one transaction, but an installment plan or a recurring
+// subscription contributes one transaction per payment taken. These two routes
+// let an admin see that flattened list and remove entries from it - used to
+// clear duplicates, test records and payments that were reversed outside the
+// platform.
+// ---------------------------------------------------------------------------
+
+const TRANSACTION_KINDS = ["single", "installment", "recurring"];
+
+// A transaction is addressed by "<orderId>:<kind>:<ref>". ObjectIds never
+// contain a colon, so the key round-trips safely through the client.
+function buildTransactionId(orderId, kind, ref) {
+  return `${orderId}:${kind}:${ref}`;
+}
+
+function parseTransactionId(value) {
+  if (typeof value !== "string") return null;
+  const [orderId, kind, ...rest] = value.split(":");
+  if (!orderId || !TRANSACTION_KINDS.includes(kind)) return null;
+  return { orderId, kind, ref: rest.join(":") };
+}
+
+function isOneTime(order) {
+  return !order.paymentType || ["single", "one_time"].includes(order.paymentType);
+}
+
+// The PayPal controller records installments with `paymentDate`, which is not in
+// the schema, so it only survives on documents written through the native driver.
+// Fall back through both before giving up and using the order date.
+function installmentDate(installment, order) {
+  return installment.date || installment.paymentDate || order.createdAt;
+}
+
+// Flatten one order into the transactions it contributes.
+function flattenOrder(order) {
+  const cause = order.items?.[0]?.title || "Multiple Items";
+  const orderId = order._id.toString();
+  const rows = [];
+
+  if (isOneTime(order)) {
+    rows.push({
+      id: buildTransactionId(orderId, "single", "0"),
+      orderId,
+      donationId: order.donationId,
+      kind: "single",
+      paymentType: order.paymentType || "single",
+      date: order.createdAt,
+      amount: order.totalAmount || 0,
+      status: order.paymentStatus,
+      description: cause,
+    });
+  } else if (order.paymentType === "installments" && order.installmentDetails) {
+    const history = order.installmentDetails.installmentHistory || [];
+    const total = order.installmentDetails.numberOfInstallments;
+
+    history.forEach((installment, index) => {
+      const number = installment.installmentNumber ?? index + 1;
+      rows.push({
+        id: buildTransactionId(orderId, "installment", number),
+        orderId,
+        donationId: order.donationId,
+        kind: "installment",
+        paymentType: "installments",
+        date: installmentDate(installment, order),
+        amount: Number(installment.amount) || 0,
+        status: installment.status,
+        description: `Installment ${number}${total ? ` of ${total}` : ""}: ${cause}`,
+      });
+    });
+
+    // A plan with no recorded payments still needs to be reachable, otherwise an
+    // admin cannot remove an order that was created in error.
+    if (history.length === 0) {
+      rows.push({
+        id: buildTransactionId(orderId, "single", "0"),
+        orderId,
+        donationId: order.donationId,
+        kind: "single",
+        paymentType: "installments",
+        date: order.createdAt,
+        amount: 0,
+        status: order.paymentStatus,
+        description: `${cause} (no installments paid)`,
+      });
+    }
+  } else if (order.paymentType === "recurring") {
+    // Stripe and PayPal both append to recurringDetails.paymentHistory.
+    const history = order.recurringDetails?.paymentHistory || [];
+
+    history.forEach((payment, index) => {
+      rows.push({
+        id: buildTransactionId(orderId, "recurring", index),
+        orderId,
+        donationId: order.donationId,
+        kind: "recurring",
+        paymentType: "recurring",
+        date: payment.date || order.createdAt,
+        amount: Number(payment.amount) || order.recurringDetails?.amount || 0,
+        status: payment.status,
+        description: `Recurring payment ${index + 1}: ${cause}`,
+        invoiceId: payment.invoiceId,
+      });
+    });
+
+    if (history.length === 0) {
+      rows.push({
+        id: buildTransactionId(orderId, "single", "0"),
+        orderId,
+        donationId: order.donationId,
+        kind: "single",
+        paymentType: "recurring",
+        date: order.createdAt,
+        amount: order.recurringDetails?.amount || order.totalAmount || 0,
+        status: order.paymentStatus,
+        description: `${cause} (no payments recorded)`,
+      });
+    }
+  }
+
+  return rows;
+}
+
+// Recompute lastPaymentDate from what is left in the history. The pre-save hook
+// only ever moves this date forward, so it has to be cleared here.
+function refreshLastPaymentDate(order) {
+  const dates = [];
+
+  (order.recurringDetails?.paymentHistory || [])
+    .filter(p => ["succeeded", "completed"].includes(p.status))
+    .forEach(p => p.date && dates.push(new Date(p.date)));
+
+  (order.installmentDetails?.installmentHistory || [])
+    .filter(i => i.status === "completed")
+    .forEach(i => {
+      const value = i.date || i.paymentDate;
+      if (value) dates.push(new Date(value));
+    });
+
+  order.lastPaymentDate = dates.length
+    ? new Date(Math.max(...dates.map(d => d.getTime())))
+    : undefined;
+}
+
+// GET /admin/donors/:id/transactions
+router.get("/:id/transactions", isAdmin, async (req, res) => {
+  try {
+    const donorId = req.params.id;
+    const donor = await User.findById(donorId).select("name email").lean();
+    if (!donor) {
+      return res.status(404).json({ status: "Error", message: "Donor not found" });
+    }
+
+    const orders = await Order.find({ user: donorId }).lean();
+    const transactions = orders
+      .flatMap(flattenOrder)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    res.json({
+      status: "Success",
+      data: {
+        donor: { id: donor._id, name: donor.name, email: donor.email },
+        transactions,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to fetch donor transactions",
+      error: err.message,
+    });
+  }
+});
+
+// POST /admin/donors/:id/transactions/delete
+// Body: { transactionIds: ["<orderId>:<kind>:<ref>", ...] }
+router.post("/:id/transactions/delete", isAdmin, async (req, res) => {
+  try {
+    const donorId = req.params.id;
+    const { transactionIds } = req.body || {};
+
+    if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
+      return res.status(400).json({
+        status: "Error",
+        message: "Provide at least one transaction to remove",
+      });
+    }
+
+    const parsed = transactionIds.map(parseTransactionId);
+    if (parsed.some(entry => entry === null)) {
+      return res.status(400).json({
+        status: "Error",
+        message: "One or more transaction references are malformed",
+      });
+    }
+
+    // Group by order so an order is loaded and saved once, however many of its
+    // payments were selected.
+    const byOrder = new Map();
+    parsed.forEach(entry => {
+      if (!byOrder.has(entry.orderId)) byOrder.set(entry.orderId, []);
+      byOrder.get(entry.orderId).push(entry);
+    });
+
+    let removedTransactions = 0;
+    let removedOrders = 0;
+    const skipped = [];
+
+    for (const [orderId, entries] of byOrder) {
+      // Scoped to this donor so an admin cannot reach another donor's order by
+      // handing us a foreign id.
+      const order = await Order.findOne({ _id: orderId, user: donorId });
+      if (!order) {
+        skipped.push({ orderId, reason: "Donation not found for this donor" });
+        continue;
+      }
+
+      // Removing the donation itself wins over removing individual payments -
+      // there would be nothing left to remove them from.
+      if (entries.some(entry => entry.kind === "single")) {
+        await Order.deleteOne({ _id: order._id, user: donorId });
+        removedOrders += 1;
+        removedTransactions += entries.length;
+        continue;
+      }
+
+      const installmentNumbers = new Set(
+        entries.filter(e => e.kind === "installment").map(e => String(e.ref))
+      );
+      const recurringIndexes = new Set(
+        entries.filter(e => e.kind === "recurring").map(e => Number(e.ref))
+      );
+
+      if (installmentNumbers.size > 0 && order.installmentDetails) {
+        const history = order.installmentDetails.installmentHistory || [];
+        const kept = history.filter((installment, index) => {
+          const number = String(installment.installmentNumber ?? index + 1);
+          return !installmentNumbers.has(number);
+        });
+
+        removedTransactions += history.length - kept.length;
+        order.installmentDetails.installmentHistory = kept;
+        order.installmentDetails.installmentsPaid = kept.filter(
+          i => i.status === "completed"
+        ).length;
+      }
+
+      if (recurringIndexes.size > 0 && order.recurringDetails) {
+        const history = order.recurringDetails.paymentHistory || [];
+        const kept = history.filter((payment, index) => !recurringIndexes.has(index));
+
+        removedTransactions += history.length - kept.length;
+        order.recurringDetails.paymentHistory = kept;
+        order.recurringDetails.totalPayments = kept.filter(p =>
+          ["succeeded", "completed"].includes(p.status)
+        ).length;
+      }
+
+      refreshLastPaymentDate(order);
+      await order.save();
+    }
+
+    res.json({
+      status: "Success",
+      message: `Removed ${removedTransactions} transaction${removedTransactions === 1 ? "" : "s"}`,
+      data: { removedTransactions, removedOrders, skipped },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      status: "Error",
+      message: "Failed to remove donor transactions",
+      error: err.message,
+    });
+  }
+});
+
+
 module.exports = router;
