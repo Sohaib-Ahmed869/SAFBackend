@@ -99,8 +99,21 @@ const parseTimeParts = (timeStr) => {
   return { hh: Number(tm[1]), mm: Number(tm[2]), ss: Number(tm[3] || 0) };
 };
 
-// "2024-08-08" — how date cells come out when the workbook is read with
-// cellDates + dateNF (see parseUploadedFile). Unambiguous, try it first.
+// A real Excel date cell arrives as a JS Date (see parseUploadedFile). Its
+// day/month/year are unambiguous, unlike the formatted string, which follows
+// the cell's OWN number format: a US-formatted cell renders 6 September as
+// "9/6/26", which the day-first template parser then reads as 9 June.
+const parseDateCellParts = (value) => {
+  if (!(value instanceof Date) || isNaN(value.getTime())) return null;
+  return {
+    year: value.getFullYear(),
+    month: value.getMonth() + 1,
+    day: value.getDate(),
+  };
+};
+
+// "2024-08-08" — an ISO string, either hand-typed or produced by a cell whose
+// own format happens to be ISO. Unambiguous, so try it before the d/m guess.
 const parseIsoDateParts = (dateStr) => {
   const m = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return null;
@@ -118,6 +131,9 @@ const parseExportDate = (dateStr, timeStr, tzStr) => {
   if (!dateStr) return null;
   const offset = TZ_OFFSET_HOURS[String(tzStr || "").trim().toUpperCase()] ?? 10;
   const time = parseTimeParts(timeStr);
+
+  const cell = parseDateCellParts(dateStr);
+  if (cell) return buildLocalDate(cell, time, offset);
 
   const iso = parseIsoDateParts(dateStr);
   if (iso) return buildLocalDate(iso, time, offset);
@@ -139,6 +155,9 @@ const parseExportDate = (dateStr, timeStr, tzStr) => {
 const parseTemplateDate = (dateStr, timeStr) => {
   if (!dateStr) return null;
   const time = parseTimeParts(timeStr) || { hh: 12, mm: 0, ss: 0 };
+
+  const cell = parseDateCellParts(dateStr);
+  if (cell) return buildLocalDate(cell, time, 10);
 
   const iso = parseIsoDateParts(dateStr);
   if (iso) return buildLocalDate(iso, time, 10);
@@ -319,15 +338,27 @@ const parseSafTemplateRows = (rows) => {
  * { format, transactions, ignored }.
  */
 const parseUploadedFile = (buffer) => {
-  // cellDates + dateNF renders real date cells as unambiguous ISO strings
-  // (hand-typed text like "8/8/24" or "15/03/2025" comes through untouched
-  // and is handled by the format-specific date parsers).
   const wb = XLSX.read(buffer, { type: "buffer", cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, {
-    raw: false,
-    defval: null,
-    dateNF: "yyyy-mm-dd",
+
+  // raw:false formats every cell for display, which is what the amount and text
+  // columns want. It is wrong for dates: a formatted date follows the cell's own
+  // number format, so a US-formatted cell hands us "9/6/26" for 6 September and
+  // the day-first template parser turns it into 9 June. dateNF does NOT override
+  // a cell that carries its own format. So take a second, unformatted pass and
+  // put the real Date objects back over the formatted strings - hand-typed text
+  // dates are not Dates and come through untouched for the d/m parsers.
+  const rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: null });
+  const rawRows = XLSX.utils.sheet_to_json(ws, { raw: true, defval: null });
+
+  rows.forEach((row, i) => {
+    const rawRow = rawRows[i];
+    if (!rawRow) return;
+    for (const key of Object.keys(row)) {
+      if (rawRow[key] instanceof Date && !isNaN(rawRow[key].getTime())) {
+        row[key] = rawRow[key];
+      }
+    }
   });
   if (rows.length === 0) {
     throw new Error("The file has no data rows below the header.");
