@@ -263,11 +263,12 @@ const buildStatementRows = (donations, p2pDonations, year) => {
     });
   });
 
-  // Sort every transaction by the date it actually happened, most recent first.
-  // Rows are built per donation - and one donation can contribute several rows
-  // spread across the year, while P2P rows were appended after all the others -
-  // so the table has to be ordered once it is assembled, not by donation date.
-  tableData.sort((a, b) => b.transaction_date - a.transaction_date);
+  // Sort every transaction by the date it actually happened, oldest first, so
+  // the statement reads in the order the donations were made. Rows are built
+  // per donation - and one donation can contribute several rows spread across
+  // the year, while P2P rows were appended after all the others - so the table
+  // has to be ordered once it is assembled, not by donation date.
+  tableData.sort((a, b) => a.transaction_date - b.transaction_date);
 
   // Total — mirror the row-rendering logic so the printed total matches the rows.
   const totalDonated =
