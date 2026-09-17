@@ -25,7 +25,7 @@ const STATEMENT_SKIP_LIFETIME_FALLBACK_DONATION_IDS = new Set(["95955433"]);
 // calendar date regardless of who downloads the statement.
 const STATEMENT_TIME_ZONE = "Australia/Sydney";
 
-// YYYY-MM-DD in STATEMENT_TIME_ZONE (matches AnnualDonation.jsx formatDate).
+// DD/MM/YYYY in STATEMENT_TIME_ZONE (matches AnnualDonation.jsx formatDate).
 const formatDate = (date) => {
   if (!date) return "";
   try {
@@ -38,7 +38,7 @@ const formatDate = (date) => {
       day: "2-digit",
     }).formatToParts(d);
     const get = (type) => parts.find((p) => p.type === type)?.value;
-    return `${get("year")}-${get("month")}-${get("day")}`;
+    return `${get("day")}/${get("month")}/${get("year")}`;
   } catch (error) {
     console.error("Error formatting date:", error);
     return "";

@@ -679,12 +679,16 @@ const formatAddress = (address) => {
  * @returns {string} - Formatted date
  */
 const formatDate = (date) => {
+  if (!date) return "";
   const d = new Date(date);
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const year = d.getFullYear();
-
-  return `${year}-${month}-${day}`;
+  if (isNaN(d.getTime())) return "";
+  // DD/MM/YYYY on the Sydney calendar day, whatever the viewer's or server's timezone.
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Sydney",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(d);
 };
 
 /**
