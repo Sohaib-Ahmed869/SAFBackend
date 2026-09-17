@@ -288,7 +288,7 @@ const sendCancellationRequestEmail = async (subscription) => {
           }</p>
           <p><strong>Start Date:</strong> ${new Date(
             subscription.recurringDetails.startDate
-          ).toLocaleDateString()}</p>
+          ).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Cancellation Reason:</strong> ${
             subscription.cancellationDetails?.reason || "Not provided"
           }</p>

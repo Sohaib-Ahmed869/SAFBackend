@@ -600,7 +600,7 @@ const sendCancellationConfirmationEmail = async (donation) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${donation.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
           <p><strong>Frequency:</strong> ${donation.recurringDetails.frequency}</p>
         </div>
@@ -1207,7 +1207,7 @@ const sendBankTransferApprovalEmail = async (donation) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${donation.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
         </div>
 
@@ -1269,7 +1269,7 @@ const sendBankTransferCancellationEmail = async (donation) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${donation.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
         </div>
 
@@ -1331,7 +1331,7 @@ const sendEFTPOSApprovalEmail = async (donation) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${donation.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
         </div>
 
@@ -1393,7 +1393,7 @@ const sendEFTPOSCancellationEmail = async (donation) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${donation.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
         </div>
 
@@ -1472,7 +1472,7 @@ const sendDonationCancellationEmail = async (donation) => {
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0;">Donation Details:</h3>
           <p><strong>Donation ID:</strong> ${donation.donationId}</p>
-          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString()}</p>
+          <p><strong>Date:</strong> ${new Date(donation.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${donation.totalAmount.toFixed(2)} AUD</p>
         </div>
 

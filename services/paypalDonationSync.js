@@ -99,21 +99,8 @@ const parseTimeParts = (timeStr) => {
   return { hh: Number(tm[1]), mm: Number(tm[2]), ss: Number(tm[3] || 0) };
 };
 
-// A real Excel date cell arrives as a JS Date (see parseUploadedFile). Its
-// day/month/year are unambiguous, unlike the formatted string, which follows
-// the cell's OWN number format: a US-formatted cell renders 6 September as
-// "9/6/26", which the day-first template parser then reads as 9 June.
-const parseDateCellParts = (value) => {
-  if (!(value instanceof Date) || isNaN(value.getTime())) return null;
-  return {
-    year: value.getFullYear(),
-    month: value.getMonth() + 1,
-    day: value.getDate(),
-  };
-};
-
-// "2024-08-08" — an ISO string, either hand-typed or produced by a cell whose
-// own format happens to be ISO. Unambiguous, so try it before the d/m guess.
+// "2024-08-08" — either hand-typed, or a real Excel date cell (parseUploadedFile
+// rewrites those to ISO). Unambiguous, so try it before the d/m guess.
 const parseIsoDateParts = (dateStr) => {
   const m = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return null;
@@ -131,9 +118,6 @@ const parseExportDate = (dateStr, timeStr, tzStr) => {
   if (!dateStr) return null;
   const offset = TZ_OFFSET_HOURS[String(tzStr || "").trim().toUpperCase()] ?? 10;
   const time = parseTimeParts(timeStr);
-
-  const cell = parseDateCellParts(dateStr);
-  if (cell) return buildLocalDate(cell, time, offset);
 
   const iso = parseIsoDateParts(dateStr);
   if (iso) return buildLocalDate(iso, time, offset);
@@ -155,9 +139,6 @@ const parseExportDate = (dateStr, timeStr, tzStr) => {
 const parseTemplateDate = (dateStr, timeStr) => {
   if (!dateStr) return null;
   const time = parseTimeParts(timeStr) || { hh: 12, mm: 0, ss: 0 };
-
-  const cell = parseDateCellParts(dateStr);
-  if (cell) return buildLocalDate(cell, time, 10);
 
   const iso = parseIsoDateParts(dateStr);
   if (iso) return buildLocalDate(iso, time, 10);
@@ -338,28 +319,39 @@ const parseSafTemplateRows = (rows) => {
  * { format, transactions, ignored }.
  */
 const parseUploadedFile = (buffer) => {
-  const wb = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  // raw:true keeps CSV text exactly as typed. Without it SheetJS guesses that
+  // "07/02/2026" is a US date and turns it into 2 July before any of our
+  // day-first parsing runs. (It has no effect on real .xlsx date cells.)
+  //
+  // cellDates is deliberately off: SheetJS builds those Dates in the server's
+  // local timezone and, in zones with a historical LMT offset, lands them a few
+  // seconds before midnight on the PREVIOUS day. The serial number is decoded
+  // with SSF instead, which involves no timezone at all. cellNF exposes each
+  // cell's number format (cell.z), which is how date cells are recognised below.
+  const wb = XLSX.read(buffer, { type: "buffer", raw: true, cellNF: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
 
-  // raw:false formats every cell for display, which is what the amount and text
-  // columns want. It is wrong for dates: a formatted date follows the cell's own
-  // number format, so a US-formatted cell hands us "9/6/26" for 6 September and
-  // the day-first template parser turns it into 9 June. dateNF does NOT override
-  // a cell that carries its own format. So take a second, unformatted pass and
-  // put the real Date objects back over the formatted strings - hand-typed text
-  // dates are not Dates and come through untouched for the d/m parsers.
-  const rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: null });
-  const rawRows = XLSX.utils.sheet_to_json(ws, { raw: true, defval: null });
+  // Formatted text is what the amount, time and text columns want. It is wrong
+  // for dates: that text follows the cell's own number format, and Excel's
+  // built-in short date renders 7 February as "2/7/26" whatever locale the admin
+  // saw it in, which the day-first template parser then reads as 2 July. So
+  // rewrite every date cell as unambiguous ISO text first. Serials below 1 are
+  // time-only cells (the Time column) and keep their formatted text.
+  for (const addr of Object.keys(ws)) {
+    if (addr[0] === "!") continue;
+    const cell = ws[addr];
+    if (cell.t !== "n" || !cell.z || cell.v < 1 || !XLSX.SSF.is_date(cell.z)) continue;
+    const parts = XLSX.SSF.parse_date_code(cell.v);
+    if (!parts) continue;
+    const iso = [
+      parts.y,
+      String(parts.m).padStart(2, "0"),
+      String(parts.d).padStart(2, "0"),
+    ].join("-");
+    ws[addr] = { t: "s", v: iso, w: iso };
+  }
 
-  rows.forEach((row, i) => {
-    const rawRow = rawRows[i];
-    if (!rawRow) return;
-    for (const key of Object.keys(row)) {
-      if (rawRow[key] instanceof Date && !isNaN(rawRow[key].getTime())) {
-        row[key] = rawRow[key];
-      }
-    }
-  });
+  const rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: null });
   if (rows.length === 0) {
     throw new Error("The file has no data rows below the header.");
   }

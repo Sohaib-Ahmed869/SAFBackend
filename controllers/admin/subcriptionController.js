@@ -32,7 +32,7 @@ const sendCancellationApprovalEmail = async (subscription) => {
           <h3 style="margin-top: 0;">Subscription Details:</h3>
           <p><strong>Amount:</strong> $${subscription.totalAmount.toFixed(2)} AUD</p>
           <p><strong>Frequency:</strong> ${subscription.recurringDetails.frequency}</p>
-          <p><strong>Cancellation Date:</strong> ${new Date().toLocaleDateString()}</p>
+          <p><strong>Cancellation Date:</strong> ${new Date().toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
         </div>
 
         <p>Thank you for your generous support. We hope you will consider supporting our cause again in the future.</p>

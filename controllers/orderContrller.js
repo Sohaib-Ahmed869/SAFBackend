@@ -275,7 +275,7 @@ const sendBankTransferPendingEmail = async (order, paymentMethod = "bank") => {
           <p><strong>Donation ID:</strong> ${order.donationId}</p>
           <p><strong>Date:</strong> ${new Date(
             order.createdAt
-          ).toLocaleDateString()}</p>
+          ).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           <p><strong>Amount:</strong> $${order.totalAmount.toFixed(2)} AUD</p>
         </div>
 
@@ -352,7 +352,7 @@ const sendCancellationRequestEmail = async (order) => {
           <p><strong>Frequency:</strong> ${order.recurringDetails.frequency}</p>
           <p><strong>Start Date:</strong> ${new Date(
             order.recurringDetails.startDate
-          ).toLocaleDateString()}</p>
+          ).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
         </div>
 
         <p>Please review this request and take appropriate action through the admin panel.</p>

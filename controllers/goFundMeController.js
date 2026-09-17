@@ -44,7 +44,7 @@ const sendAdminNotification = async (goFundMe, user) => {
           <p><strong>Category:</strong> ${displayCategory}</p>
           <p><strong>Target Amount:</strong> $${goFundMe.targetAmount.toFixed(2)} AUD</p>
           <p><strong>Urgency Level:</strong> ${goFundMe.urgencyLevel}</p>
-          <p><strong>Submitted Date:</strong> ${new Date(goFundMe.createdAt).toLocaleDateString()}</p>
+          <p><strong>Submitted Date:</strong> ${new Date(goFundMe.createdAt).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
         </div>
         
         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -133,7 +133,7 @@ const sendUserNotification = async (goFundMe, status, adminNotes) => {
           <p><strong>Campaign Title:</strong> ${goFundMe.title}</p>
           <p><strong>Category:</strong> ${getDisplayCategory(goFundMe.category, goFundMe.customCategory)}</p>
           <p><strong>Target Amount:</strong> $${goFundMe.targetAmount.toFixed(2)} AUD</p>
-          <p><strong>Review Date:</strong> ${new Date().toLocaleDateString()}</p>
+          <p><strong>Review Date:</strong> ${new Date().toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
         </div>
         
         ${adminNotes ? `
@@ -614,7 +614,7 @@ exports.processDonation = async (req, res) => {
             <p><strong>Campaign:</strong> ${goFundMe.title}</p>
             <p><strong>Amount:</strong> $${(paymentIntent.amount / 100).toFixed(2)} AUD</p>
             <p><strong>Payment Method:</strong> ${cardType}</p>
-            <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+            <p><strong>Date:</strong> ${new Date().toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })}</p>
           </div>
           <p>Your support helps us make a difference. Thank you!</p>
           <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #777;">
